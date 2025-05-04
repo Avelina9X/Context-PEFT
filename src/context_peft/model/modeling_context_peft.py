@@ -437,8 +437,8 @@ def _adaptor_mask_pre_forward_hook( target, args, kwargs, adaptor_mask ):
     return args, kwargs
 
 class ContextPeftModel( ContextPeftPreTrainedModel, GenerationMixin ):
-    def __init__( self, config: ContextPeftConfig, load_from_hub=False ):
-        super().__init__( config )
+    def __init__( self, config: ContextPeftConfig, load_from_hub=False, **kwargs ):
+        super().__init__( config, **kwargs )
 
         # Set local versions because self.config.* can cause graph breaks
         self.image_pad_token_id = config.image_pad_token_id
@@ -660,3 +660,6 @@ class ContextPeftModel( ContextPeftPreTrainedModel, GenerationMixin ):
             model_inputs[ 'skip_unused_adaptors' ] = skip_unused_adaptors
         
         return model_inputs
+    
+    def _supports_logits_to_keep( self ):
+        return self.text_model._supports_logits_to_keep()
