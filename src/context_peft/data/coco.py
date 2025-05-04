@@ -202,7 +202,8 @@ class CocoDataset( BaseDataset ):
         assistant_suffix: list[int] | str,
         batch_size: int,
         sequence_length: int,
-        cache_dir: str | None = None
+        cache_dir: str | None = None,
+        download_timeout: int = 3600,
     ):
         """ Instantiates a COCO 2017 dataset.
 
@@ -225,7 +226,7 @@ class CocoDataset( BaseDataset ):
         # Create download config with extended timeout, optional cache_dir, and optional progbars
         dl_config = DownloadConfig(
             cache_dir=cache_dir,
-            storage_options={ 'client_kwargs': { 'timeout': aiohttp.ClientTimeout( total=3600 ) } },
+            storage_options={ 'client_kwargs': { 'timeout': aiohttp.ClientTimeout( total=download_timeout ) } },
             disable_tqdm=are_progress_bars_disabled(),
         )
 
