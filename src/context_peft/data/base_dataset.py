@@ -53,7 +53,12 @@ class BaseDataset( ABC ):
         raise NotImplementedError()
     
     @abstractmethod
-    def collate_fn( self, examples: list ) -> BatchFeature:
+    def get_validation_split( self ) -> Dataset:
+        """ Returns the pre-mapped validation split """
+        raise NotImplementedError()
+    
+    @abstractmethod
+    def train_collate_fn( self, examples: list ) -> BatchFeature:
         """ Constructs a BatchFeature from a list of dataset rows.
 
         Args:
@@ -64,7 +69,19 @@ class BaseDataset( ABC ):
         """
         raise NotImplementedError()
     
-    def iterator( self, seed_start=0, seed_step=1 ) -> Iterator[BatchFeature]:
+    @abstractmethod
+    def validation_collate_fn( self, examples: list ) -> BatchFeature:
+        """ Constructs a BatchFeature from a list of dataset rows.
+
+        Args:
+            examples (list): List which forms the batch
+
+        Returns:
+            BatchFeature: A feature dict containing all inputs needed for the forward pass and a `labels` item
+        """
+        raise NotImplementedError()
+    
+    def train_iterator( self, seed_start=0, seed_step=1 ) -> Iterator[BatchFeature]:
         """ Creates an iterator over the dataset which performs shuffling, and yields BatchFeatures
 
         Args:
@@ -80,5 +97,14 @@ class BaseDataset( ABC ):
             seed_start=seed_start,
             seed_step=seed_step
         ):
-            yield self.collate_fn( row )
+            yield self.train_collate_fn( row )
     
+    @abstractmethod
+    def validation_iterator( self )  -> Iterator[BatchFeature]:
+        """ Creates an iterator over the validation split, yielding BatchFeatures
+
+        Yields:
+            BatchFeature: A feature dict containing all inputs needed for the forward pass and a `labels` item
+        """
+
+        raise NotImplementedError()

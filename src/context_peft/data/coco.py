@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 import os
 import math
 import random
@@ -78,7 +79,7 @@ def _compute_instruction_map() -> list[tuple[str, ...]]:
 CAPTION_INSTRUCTIONS_MAP = _compute_instruction_map()
 
 
-def _collate_fn(
+def _train_collate_fn(
     examples: list,
     coco_train_folder: str,
     padding_size: int,
@@ -100,6 +101,52 @@ def _collate_fn(
             make_multimodal_user_turn( prompt, [ path ] ),
             make_multimodal_assistant_turn( caption.strip() )
         ] )
+
+    batch: BatchFeature = processor.apply_chat_template(
+        messages,
+        tokenize=True,
+        return_tensors='pt',
+        padding='max_length',
+        max_length=pad_to,
+        return_dict=True,
+        truncation=False,
+    ) # type: ignore
+
+    input_ids, labels = compute_assistant_mask( batch.input_ids, assistant_prefix, assistant_suffix )
+
+    inputs = {
+        'input_ids': input_ids,
+        'labels': labels,
+    }
+
+    if 'pixel_values' in batch and batch.pixel_values is not None:
+        inputs[ 'pixel_values' ] = batch.pixel_values
+
+    if 'attention_mask' in batch and batch.attention_mask is not None:
+        inputs[ 'attention_mask' ] = batch.attention_mask[ :, : -1 ]
+
+    return BatchFeature( inputs, tensor_type='pt' )
+
+def _validation_collate_fn(
+    examples: list,
+    coco_validation_folder: str,
+    padding_size: int,
+    processor: ProcessorMixin,
+    assistant_prefix: list[int],
+    assistant_suffix: list[int],
+    caption_instruction: tuple[str, ...],
+):
+    pad_to = padding_size + 1
+
+    messages = []
+
+    for example in examples:
+        path = os.path.join( coco_validation_folder, example[ 'file_name' ] )
+        for caption in example[ 'captions' ]:
+            messages.append( [
+                make_multimodal_user_turn( caption_instruction, [ path ] ),
+                make_multimodal_assistant_turn( caption.strip() )
+            ] )
 
     batch: BatchFeature = processor.apply_chat_template(
         messages,
@@ -165,7 +212,7 @@ class CocoDataset( BaseDataset ):
             assistant_suffix (list[int] | str): Suffix of assistant messages. May be a string or list of token ids.
             batch_size (int): Training batch size.
             sequence_length (int): Sequence length, will pad all sequences up to this size.
-            cache_dir (str | None, optional): _description_. Defaults to None.
+            cache_dir (str | None, optional): When specified uses this directory for dataset cache instead of default. Defaults to None.
         """
         super().__init__(
             processor=processor,
@@ -199,12 +246,18 @@ class CocoDataset( BaseDataset ):
 
         # Apply map to split captions
         self.train_split = _split_captions( dataset[ 'train' ] )
+
+        # Set validation split as is
+        self.valid_split = dataset[ 'validation' ]
     
     def get_train_split( self ) -> Dataset:
         return self.train_split
     
-    def collate_fn( self, examples: list ) -> BatchFeature:
-        return _collate_fn(
+    def get_validation_split( self ) -> Dataset:
+        return self.valid_split
+    
+    def train_collate_fn( self, examples: list ) -> BatchFeature:
+        return _train_collate_fn(
             examples=examples,
             coco_train_folder=self.train_folder,
             padding_size=self.sequence_length,
@@ -213,6 +266,21 @@ class CocoDataset( BaseDataset ):
             assistant_suffix=self.assistant_suffix,
             caption_instruction_map=CAPTION_INSTRUCTIONS_MAP
         )
+    
+    def validation_collate_fn( self, examples: list ) -> BatchFeature:
+        return _validation_collate_fn(
+            examples=examples,
+            coco_validation_folder=self.valid_folder,
+            padding_size=self.sequence_length,
+            processor=self.processor,
+            assistant_prefix=self.assistant_prefix,
+            assistant_suffix=self.assistant_suffix,
+            caption_instruction=CAPTION_INSTRUCTIONS_MAP[0]
+        )
+    
+    def validation_iterator(self) -> Iterator[BatchFeature]:
+        for row in self.get_validation_split():
+            yield self.validation_collate_fn( [ row ] )
 
 
 def calculate_padding( vision_model_name: str, pad_to_multiple=32 ) -> int:
