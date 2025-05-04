@@ -415,9 +415,6 @@ CONTEXT_PEFT_WRAPPER_MAPPING = {
 class ContextPeftPreTrainedModel( PreTrainedModel ):
     config_class = ContextPeftConfig
     base_model_prefix = 'text_model'
-    _supports_flash_attn_2 = True
-    _supports_sdpa = True
-    _supports_cache_class = True
 
     def _init_weights( self, module ):
         std = self.config.get_text_config().initializer_range
@@ -481,6 +478,14 @@ class ContextPeftModel( ContextPeftPreTrainedModel, GenerationMixin ):
         # If the text model has tied weights we must add their keys
         if self.text_model._tied_weights_keys is not None:
             self._tied_weights_keys = [ f'text_model.{k}' for k in self.text_model._tied_weights_keys ] # type: ignore
+        
+        # Set support flags
+        self._supports_flash_attn_2 = self.text_model._supports_flash_attn_2
+        self._supports_sdpa = self.text_model._supports_sdpa
+        self._supports_flex_attn = self.text_model._supports_flex_attn
+        self._supports_cache_class = self.text_model._supports_cache_class
+        self._supports_static_cache = self.text_model._supports_static_cache
+        self._supports_quantized_cache = self.text_model._supports_quantized_cache
 
         # Run standard HF post init
         self.post_init()
@@ -586,7 +591,7 @@ class ContextPeftModel( ContextPeftPreTrainedModel, GenerationMixin ):
         self,
         input_ids: torch.LongTensor | None = None,
         pixel_values: torch.FloatTensor | None = None,
-        # attention_mask: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
         # position_ids: torch.LongTensor | None = None,
         # past_key_values: list[torch.FloatTensor] | Cache | None = None,
         # cache_position: torch.LongTensor | None = None,
@@ -622,7 +627,7 @@ class ContextPeftModel( ContextPeftPreTrainedModel, GenerationMixin ):
         # Add adaptor mask forward hooks to all adaptor layers
         with self._enable_forward_hooks( adaptor_mask=adaptor_mask ):
             # Forward pass text model with merged embeddings and additional kwargs
-            return self.text_model( inputs_embeds=inputs_embeds, **kwargs )
+            return self.text_model( inputs_embeds=inputs_embeds, attention_mask=attention_mask, **kwargs )
 
     def tie_weights(self):
         return self.text_model.tie_weights()
