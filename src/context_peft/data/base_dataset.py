@@ -1,6 +1,8 @@
 from collections.abc import Iterator
 from abc import ABC, abstractmethod
 
+import torch.utils.data.dataloader as dataloader
+
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.processing_utils import ProcessorMixin
@@ -8,6 +10,17 @@ from datasets import Dataset
 
 from .dataset_utils import batched_shuffle_iter
 
+class PrefetchDataset( dataloader.IterableDataset ):
+    def __init__( self, dataset: 'BaseDataset', seed_start=0, seed_step=1 ):
+        super().__init__()
+        self.dataset = dataset
+
+    def __iter__( self ):
+        info = dataloader.get_worker_info()
+        num_workers = info.num_workers if info is not None else 1
+        worker_id = info.id if info is not None else 0
+        for i in self.dataset.train_iterator( num_workers=num_workers, worker_id=worker_id ):
+            yield i
 
 class BaseDataset( ABC ):
     """ Base dataset class for multimodal image-text datasets.
@@ -81,23 +94,26 @@ class BaseDataset( ABC ):
         """
         raise NotImplementedError()
     
-    def train_iterator( self, seed_start=0, seed_step=1 ) -> Iterator[BatchFeature]:
+    def train_iterator( self, seed_start=0, seed_step=1, num_workers=1, worker_id=0 ) -> Iterator[BatchFeature]:
         """ Creates an iterator over the dataset which performs shuffling, and yields BatchFeatures
 
         Args:
             seed_start (int, optional): Starting shuffle seed. Defaults to 0.
-            seed_step (int, optional): Step size to increment seed by. Defaults to 1.
+            seed_step (int, optional): Step size to increment seed by each epoch. Defaults to 1.
+            num_workers (int, optional): The number of workers to split loading across. Defaults to 1.
+            worker_id (int, optional): The index of the current worker. Defaults to 0.
 
         Yields:
             BatchFeature: A feature dict containing all inputs needed for the forward pass and a `labels` item
         """
-        for row in batched_shuffle_iter(
+        for i, row in enumerate( batched_shuffle_iter(
             ds=self.get_train_split(),
             batch_size=self.batch_size,
             seed_start=seed_start,
             seed_step=seed_step
-        ):
-            yield self.train_collate_fn( row )
+        ) ):
+            if i % num_workers == worker_id:
+                yield self.train_collate_fn( row )
     
     @abstractmethod
     def validation_iterator( self )  -> Iterator[BatchFeature]:
@@ -108,3 +124,23 @@ class BaseDataset( ABC ):
         """
 
         raise NotImplementedError()
+
+    def train_dataloader( self, num_workers: int, seed_start=0, seed_step=1, **kwargs ) -> dataloader.DataLoader:
+        """ Creates a torch DataLoader with parallel support.
+
+        Args:
+            num_workers (int): The number of workers to split loading across.
+            seed_start (int, optional): Starting shuffle seed. Defaults to 0.
+            seed_step (int, optional): Step size to increment seed by each epoch. Defaults to 1.
+
+        Returns:
+            dataloader.DataLoader: Initialised DataLoader
+        """
+        prefetch_dataset = PrefetchDataset( self, seed_start=seed_start, seed_step=seed_step )
+
+        return dataloader.DataLoader(
+            prefetch_dataset,
+            batch_size=None,
+            num_workers=num_workers,
+            **kwargs,
+        )
