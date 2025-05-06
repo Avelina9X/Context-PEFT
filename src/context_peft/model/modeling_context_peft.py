@@ -29,6 +29,10 @@ class ContextPeftAdaptorBase( ABC ):
             base_layer = base_layer.base_layer # type: ignore
         return base_layer # type: ignore
 
+    @abstractmethod
+    def init_adaptor_weights( self ):
+        raise NotImplementedError()
+
     @property
     def weight( self ) -> torch.Tensor:
         base_layer = self.get_base_layer()
@@ -106,15 +110,13 @@ class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
         self.lora_A = nn.ModuleDict( { k: nn.Linear( self.in_features, self.r[k], False ) for k in configs } )
         self.lora_B = nn.ModuleDict( { k: nn.Linear( self.r[k], self.out_features, bias[k] ) for k in configs } )
 
-        # Initialise all A and B weights
-        for name in configs:
-            nn.init.kaiming_uniform_( self.lora_A[name].weight, a=5 ** 0.5 ) # type: ignore
-            nn.init.zeros_( self.lora_B[name].weight ) # type: ignore
-
-            # Initialise bias if enabled
-            if self.lora_B[name].bias is not None:
-                nn.init.zeros_( self.lora_B[name].bias ) # type: ignore
-
+    def init_adaptor_weights( self ):
+        for a in self.lora_A.values():
+            nn.init.kaiming_uniform_( a.weight, a=5 ** 0.5 )
+        for b in self.lora_B.values():
+            b.weight.data.zero_()
+            if b.bias is not None:
+                b.bias.data.zero_()
 
     def forward( self, x: torch.Tensor, *args, **kwargs ):
 
@@ -162,7 +164,11 @@ class ContextPeftAdaptorIA3( nn.Module, ContextPeftAdaptorBase ):
         dim = self.base_layer.in_features if is_feedforward else self.base_layer.out_features
         assert isinstance( dim, int )
 
-        self.ia3_l = nn.ParameterDict( { k: nn.Parameter( torch.ones( dim ) ) for k in configs } )
+        self.ia3_l = nn.ParameterDict( { k: nn.Parameter( torch.empty( dim ) ) for k in configs } )
+
+    def init_adaptor_weights( self ):
+        for p in self.ia3_l.values():
+            p.data.fill_( 1.0 )
 
     def forward( self, x: torch.Tensor, *args, **kwargs ):
 
@@ -209,7 +215,11 @@ class ContextPeftAdaptorBitFit( nn.Module, ContextPeftAdaptorBase ):
         dim = self.base_layer.out_features
         assert isinstance( dim, int )
 
-        self.biases = nn.ParameterDict( { k: nn.Parameter( torch.ones( dim ) ) for k, v in configs.items() if v[ 'force_bias' ] or self.base_layer.bias is not None } )
+        self.biases = nn.ParameterDict( { k: nn.Parameter( torch.empty( dim ) ) for k, v in configs.items() if v[ 'force_bias' ] or self.base_layer.bias is not None } )
+
+    def init_adaptor_weights( self ):
+        for p in self.biases.values():
+            p.data.zero_()
 
     def forward( self, x: torch.Tensor, *args, **kwargs ):
 
@@ -441,13 +451,15 @@ class ContextPeftPreTrainedModel( PreTrainedModel ):
             module.weight.data.normal_( mean=0.0, std=std )
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
+        elif isinstance( module, ContextPeftAdaptorBase ):
+            module.init_adaptor_weights()
 
 # Special pre forward hook for adaptor mask injection!
 def _adaptor_mask_pre_forward_hook( target, args, kwargs, adaptor_mask ):
     kwargs[ 'adaptor_mask' ] = adaptor_mask
     return args, kwargs
 
-class ContextPeftModel( ContextPeftPreTrainedModel, GenerationMixin ):
+class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, GenerationMixin ):
     def __init__( self, config: ContextPeftConfig, load_from_hub=False, **kwargs ):
         super().__init__( config, **kwargs )
 
@@ -510,21 +522,41 @@ class ContextPeftModel( ContextPeftPreTrainedModel, GenerationMixin ):
         self.post_init()
 
     def set_adaptors_trainable( self, adaptors: bool | list[str] = True ):
-        if isinstance( adaptors, bool ):
-            if adaptors:
-                adaptors = self.config.active_adaptors
-            else:
-                adaptors = []
+        """ Sets adaptors to be trainable.
+        The specified adaptors will have `requires_grad_` set to True, and all other will be set to False.
 
-        assert isinstance( adaptors, list )
+        Args:
+            adaptors (bool | list[str], optional): The list of adaptor names to set trainable.
+                When True sets only adaptors in `config.active_adaptors` to be trainable.
+                When False sets no adaptors to be trainable. Defaults to True.
+        """
+        if isinstance( adaptors, bool ):
+            adaptors = self.config.active_adaptors if adaptors else []
+            assert isinstance( adaptors, list )
 
         for module in self.text_model.modules():
             if isinstance( module, ContextPeftAdaptorBase ):
                 module.set_adaptors_trainable( adaptors )
 
-    def get_adaptor_mask( self, input_ids: torch.LongTensor, skip_unused_adaptors=False ):
+    def get_adaptor_mask(
+        self,
+        input_ids: torch.LongTensor,
+        skip_unused_adaptors=False
+    ) -> dict[str, torch.Tensor]:
+        """ Computes the adaptor mask for the current input ids.
+
+        NOTE: setting `skip_unused_adaptors=True` can improve inference latency but is incompatible with `torch.compile`!
+
+        Args:
+            input_ids (torch.LongTensor): Input ids of the current sequence.
+            skip_unused_adaptors (bool, optional): Skips adaptors inactive for the entire batch. Defaults to False.
+
+        Returns:
+            dict[str, torch.Tensor]: _description_
+        """
+        
         # Dict which maps adaptor name -> mask
-        adaptor_mask = {}
+        adaptor_mask: dict[str, torch.Tensor] = {}
 
         # Map context -> mask
         context_map = {
@@ -557,7 +589,21 @@ class ContextPeftModel( ContextPeftPreTrainedModel, GenerationMixin ):
         inputs_embeds: torch.Tensor,
         others_embeds: torch.Tensor | None,
         others_pad_token_id: int
-    ):
+    ) -> torch.Tensor:
+        """ Merges embeddings from another modality with text embeddings.
+
+        Returns `input_embeds` where corresponding positions of `input_ids` equal to
+        `others_pad_token_id` have been replaced by the contents of `others_embeds`.
+
+        Args:
+            input_ids (torch.LongTensor): Sequence of input token ids with shape [B, S].
+            inputs_embeds (torch.Tensor): Sequence of input embeddings with shape [B, S, D]
+            others_embeds (torch.Tensor | None): Sequence of embeddings from another modality with shape [*, *, D]
+            others_pad_token_id (int): Padding token id for the other modality. 
+
+        Returns:
+            torch.Tensor: The merged embeddings, or unchanged input_embeds if others_embeds is None.
+        """
         # If other modality not present skip merge
         if others_embeds is None:
             return inputs_embeds
@@ -649,6 +695,7 @@ class ContextPeftModel( ContextPeftPreTrainedModel, GenerationMixin ):
             return self.text_model( inputs_embeds=inputs_embeds, attention_mask=attention_mask, **kwargs )
 
     def tie_weights(self):
+        # Ensure text model performs weight tying
         return self.text_model.tie_weights()
 
     def prepare_inputs_for_generation(
@@ -665,6 +712,7 @@ class ContextPeftModel( ContextPeftPreTrainedModel, GenerationMixin ):
         skip_unused_adaptors=None,
         **kwargs,
     ):
+        # Hijack text model's prepare function
         model_inputs = self.text_model.prepare_inputs_for_generation(
             input_ids,
             past_key_values=past_key_values,
@@ -677,13 +725,17 @@ class ContextPeftModel( ContextPeftPreTrainedModel, GenerationMixin ):
             **kwargs,
         )
 
+        # TODO: improve this? Copied from Gemma3
+        # Only pass pixel_values during pre-fill
         if cache_position[0] == 0: # type: ignore
             model_inputs[ 'pixel_values' ] = pixel_values
-        
+
+        # Include skip_unused_adaptors if specified
         if skip_unused_adaptors is not None:
             model_inputs[ 'skip_unused_adaptors' ] = skip_unused_adaptors
         
         return model_inputs
     
     def _supports_logits_to_keep( self ):
-        return self.text_model._supports_logits_to_keep()
+        # Cheeky hack to get logits_to_keep support from text model
+        return self.text_model._supports_logits_to_keep() # pylint: disable=W0212
