@@ -8,6 +8,7 @@ import torch.nn as nn
 from transformers.models.auto.modeling_auto import AutoModel, AutoModelForCausalLM
 from transformers.modeling_utils import PreTrainedModel, GenerationMixin
 from transformers.cache_utils import Cache
+from transformers.activations import ACT2FN
 
 from .configuration_context_peft import ContextPeftConfig
 
@@ -411,6 +412,19 @@ CONTEXT_PEFT_WRAPPER_MAPPING = {
     'bitfit': ContextPeftWrapperBitFit,
 }
 
+class ContextPeftConnector( nn.Module ):
+    def __init__( self, in_features: int, out_features: int, connector_activation: str, connector_bias: bool ):
+        super().__init__()
+
+        self.in_proj = nn.Linear( in_features, out_features, bias=connector_bias )
+        self.out_proj = nn.Linear( out_features, out_features, bias=connector_bias )
+        self.act_fn = ACT2FN[connector_activation]
+
+    def forward( self, x ):
+        x = self.in_proj( x )
+        x = self.act_fn( x )
+        x = self.out_proj( x )
+        return x
 
 class ContextPeftPreTrainedModel( PreTrainedModel ):
     config_class = ContextPeftConfig
@@ -473,7 +487,12 @@ class ContextPeftModel( ContextPeftPreTrainedModel, GenerationMixin ):
 
         # Module dict for all multi-modal connectors (only text for now)
         self.connector = nn.ModuleDict( {} )
-        self.connector[ 'image' ] = nn.Linear( config.vision_dim, config.text_dim, bias=False )
+        self.connector[ 'image' ] = ContextPeftConnector(
+            config.vision_dim,
+            config.text_dim,
+            config.connector_activation,
+            config.connector_bias
+        )
 
         # If the text model has tied weights we must add their keys
         if self.text_model._tied_weights_keys is not None:

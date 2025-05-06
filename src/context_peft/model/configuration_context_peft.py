@@ -124,6 +124,9 @@ class ContextPeftConfig( PretrainedConfig ):
 
         image_pad_token_id: int = 151647,
 
+        connector_activation: str = 'gelu',
+        connector_bias: bool = True,
+
         peft_type: str | None = None,
         default_peft_config: dict | None = None,
         adaptors: dict | None = None,
@@ -164,6 +167,9 @@ class ContextPeftConfig( PretrainedConfig ):
         self.text_trainable = text_trainable
 
         self.image_pad_token_id = image_pad_token_id
+
+        self.connector_activation = connector_activation
+        self.connector_bias = connector_bias
 
         self.peft_type = peft_type
         self.default_peft_config = default_peft_config
