@@ -132,6 +132,7 @@ class BaseDataset( ABC ):
             num_workers (int): The number of workers to split loading across.
             seed_start (int, optional): Starting shuffle seed. Defaults to 0.
             seed_step (int, optional): Step size to increment seed by each epoch. Defaults to 1.
+            kwargs: Any additional kwargs that `DataLoader` accepts apart from batch_size.
 
         Returns:
             dataloader.DataLoader: Initialised DataLoader
