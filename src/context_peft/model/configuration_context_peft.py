@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 from types import NoneType
 from copy import deepcopy
 
@@ -182,6 +182,9 @@ class ContextPeftConfig( PretrainedConfig ):
                 raise ValueError( f'Attempting to add adaptors with existing names: {overwritten_adaptors}' )
             self.adaptors.update( additional_adaptors )
 
+            if additional_active_adaptors is None:
+                additional_active_adaptors = list( additional_adaptors.keys() )
+
         # Full expand out partial adaptor configs and validate
         for adaptor_name, adaptor_config in self.adaptors.items():
             if peft_type is None:
@@ -216,3 +219,9 @@ class ContextPeftConfig( PretrainedConfig ):
             raise ValueError( 'Cannot set a default peft config when peft_type is None!' )
 
         super().__init__( **kwargs )
+
+    @classmethod
+    def from_dict( cls, config_dict: dict[str, Any], **kwargs ) -> PretrainedConfig:
+        config_dict[ 'additional_adaptors' ] = kwargs.pop( 'additional_adaptors', None )
+        config_dict[ 'additional_active_adaptors' ] = kwargs.pop( 'additional_active_adaptors', None )
+        return super().from_dict( config_dict, **kwargs )
