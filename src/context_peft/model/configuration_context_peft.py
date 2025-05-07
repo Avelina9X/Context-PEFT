@@ -222,6 +222,17 @@ class ContextPeftConfig( PretrainedConfig ):
 
     @classmethod
     def from_dict( cls, config_dict: dict[str, Any], **kwargs ) -> PretrainedConfig:
-        config_dict[ 'additional_adaptors' ] = kwargs.pop( 'additional_adaptors', None )
-        config_dict[ 'additional_active_adaptors' ] = kwargs.pop( 'additional_active_adaptors', None )
+        graft_kwargs = [
+            'peft_type',
+            'default_peft_config',
+            'adaptors',
+            'active_adaptors',
+            'additional_adaptors',
+            'additional_active_adaptors',
+        ]
+        
+        for key in graft_kwargs:
+            if key in kwargs:
+                config_dict[key] = kwargs.pop( key )
+        
         return super().from_dict( config_dict, **kwargs )
