@@ -452,6 +452,13 @@ class ContextPeftPreTrainedModel( PreTrainedModel ):
     config_class = ContextPeftConfig
     base_model_prefix = 'text_model'
 
+    _supports_flash_attn_2 = True
+    _supports_sdpa = True
+    _supports_flex_attn = True
+    _supports_cache_class = True
+    _supports_static_cache = True
+    _supports_quantized_cache = True
+
     def _init_weights( self, module ):
         std = self.config.get_text_config().initializer_range
 
@@ -489,12 +496,12 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
 
         if not load_from_hub:
             # If not loading from hub (e.g. inference or adding extra adaptors)
-            self.vision_model: PreTrainedModel = AutoModel.from_config( vision_config, torch_dtype=vision_dtype ).requires_grad_( config.vision_trainable )
-            self.text_model: PreTrainedModel = AutoModelForCausalLM.from_config( text_config, torch_dtype=text_dtype ).requires_grad_( config.text_trainable)
+            self.vision_model: PreTrainedModel = AutoModel.from_config( vision_config, torch_dtype=vision_dtype, **kwargs ).requires_grad_( config.vision_trainable )
+            self.text_model: PreTrainedModel = AutoModelForCausalLM.from_config( text_config, torch_dtype=text_dtype, **kwargs ).requires_grad_( config.text_trainable)
         else:
             # Load from hub when making new Context-PEFT model
-            self.vision_model: PreTrainedModel = AutoModel.from_pretrained( vision_config._name_or_path, config=vision_config, torch_dtype=vision_dtype ).requires_grad_( config.vision_trainable )
-            self.text_model: PreTrainedModel = AutoModelForCausalLM.from_pretrained( text_config._name_or_path, config=text_config, torch_dtype=text_dtype ).requires_grad_( config.text_trainable )
+            self.vision_model: PreTrainedModel = AutoModel.from_pretrained( vision_config._name_or_path, config=vision_config, torch_dtype=vision_dtype, **kwargs ).requires_grad_( config.vision_trainable )
+            self.text_model: PreTrainedModel = AutoModelForCausalLM.from_pretrained( text_config._name_or_path, config=text_config, torch_dtype=text_dtype, **kwargs ).requires_grad_( config.text_trainable )
 
         if config.peft_type is not None:
             # Set flag to enable adaptors
