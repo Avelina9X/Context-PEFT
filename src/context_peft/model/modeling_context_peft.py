@@ -31,6 +31,18 @@ class ContextPeftAdaptorBase( ABC ):
 
     @abstractmethod
     def init_adaptor_weights( self ):
+        """ Adaptor-specific weight initialisation.
+
+        Must be called in the base PreTrainedModel's `_init_weights()` function. 
+
+        Unlike the PEFT library -- which inits weights in the module init method or when an adaptor
+        is added -- we must rely on the standard Trasnformers initialisation system so new adaptors
+        are correctly initialised when a model is loaded with `from_pretrained()`. As a consequence
+        we do not have access to the adaptors' configs which are passed during module init; we only
+        have access to information stored in the module itself. If you need any special information
+        to intialise the weights please save them as member variables and include them in the class
+        `other_param_names` tuple so we can correctly track them!
+        """
         raise NotImplementedError()
 
     @property
