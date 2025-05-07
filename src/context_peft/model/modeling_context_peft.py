@@ -216,7 +216,7 @@ class ContextPeftAdaptorIA3( nn.Module, ContextPeftAdaptorBase ):
         return result
 
 class ContextPeftAdaptorBitFit( nn.Module, ContextPeftAdaptorBase ):
-    adaptor_layer_names = ( 'biases', )
+    adaptor_layer_names = ( 'bitfit_bias', )
     other_param_names = tuple()
     module_types = ( nn.Linear, )
 
@@ -227,10 +227,10 @@ class ContextPeftAdaptorBitFit( nn.Module, ContextPeftAdaptorBase ):
         dim = self.base_layer.out_features
         assert isinstance( dim, int )
 
-        self.biases = nn.ParameterDict( { k: nn.Parameter( torch.empty( dim ) ) for k, v in configs.items() if v[ 'force_bias' ] or self.base_layer.bias is not None } )
+        self.bitfit_bias = nn.ParameterDict( { k: nn.Parameter( torch.empty( dim ) ) for k, v in configs.items() if v[ 'force_bias' ] or self.base_layer.bias is not None } )
 
     def init_adaptor_weights( self ):
-        for p in self.biases.values():
+        for p in self.bitfit_bias.values():
             p.data.zero_()
 
     def forward( self, x: torch.Tensor, *args, **kwargs ):
@@ -239,7 +239,7 @@ class ContextPeftAdaptorBitFit( nn.Module, ContextPeftAdaptorBase ):
         adaptor_mask = kwargs.pop( 'adaptor_mask', {} )
 
         # Get a list of adaptors in this layer
-        bias_keys = self.biases.keys()
+        bias_keys = self.bitfit_bias.keys()
 
         # Compute the original result and dtype
         result = self.base_layer( x, *args, **kwargs )
@@ -250,7 +250,7 @@ class ContextPeftAdaptorBitFit( nn.Module, ContextPeftAdaptorBase ):
             # Check if that adaptor actuall exists
             if name in bias_keys:
                 # Get bias
-                bias = self.biases[name]
+                bias = self.bitfit_bias[name]
 
                 # Compute delta with scaling and masking
                 delta = bias * mask
