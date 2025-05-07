@@ -94,16 +94,10 @@ def _train_collate_fn(
 
     messages = []
 
-    image_ids = []
-    caption_ids = []
-
     for example in examples:
         prompt = random.choice( caption_instruction_map )
         caption = example[ 'caption' ]
         path = os.path.join( coco_train_folder, example[ 'file_name' ] )
-
-        image_ids.append( example[ 'image_id' ] )
-        caption_ids.append( example[ 'id' ] )
 
         messages.append( [
             make_multimodal_user_turn( prompt, [ path ] ),
@@ -125,8 +119,6 @@ def _train_collate_fn(
     inputs = {
         'input_ids': input_ids,
         'labels': labels,
-        'image_ids': torch.tensor( image_ids, dtype=torch.int64 ),
-        'caption_ids': torch.tensor( caption_ids, dtype=torch.int64 ),
     }
 
     if 'pixel_values' in batch and batch.pixel_values is not None:
