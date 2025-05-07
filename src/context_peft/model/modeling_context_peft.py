@@ -428,7 +428,7 @@ class ContextPeftWrapperIA3( ContextPeftWrapperBase ):
             ( ff_layer_map, { 'is_feedforward': True } ),
         ]
 
-CONTEXT_PEFT_WRAPPER_MAPPING = {
+CONTEXT_PEFT_WRAPPER_MAPPING: dict[str, type[ContextPeftWrapperBase]] = {
     'lora': ContextPeftWrapperLora,
     'ia3': ContextPeftWrapperIA3,
     'bitfit': ContextPeftWrapperBitFit,
