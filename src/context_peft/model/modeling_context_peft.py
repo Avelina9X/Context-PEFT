@@ -540,6 +540,9 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
             config.connector_bias
         )
 
+        # Set connector trainable
+        self.connector.requires_grad_( config.connector_trainable )
+
         # If the text model has tied weights we must add their keys
         if self.text_model._tied_weights_keys is not None:
             self._tied_weights_keys = [ f'text_model.{k}' for k in self.text_model._tied_weights_keys ] # type: ignore
