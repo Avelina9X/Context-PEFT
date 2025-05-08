@@ -85,6 +85,14 @@ class ContextPeftAdaptorBase( ABC ):
                 else:
                     layer.requires_grad_( False )
 
+    def cast_input_dtype( self, x: torch.Tensor, dtype: torch.dtype ):
+        if torch.is_autocast_enabled( x.device.type ):
+            dtype = torch.get_autocast_dtype( x.device.type )
+
+        if x.dtype == dtype:
+            return x
+        return x.to( dtype=dtype )
+
     # pylint: disable=unused-argument
     def __init__( self, base_layer: nn.Module, configs: dict[str, dict], **kwargs ):
         self.base_layer = base_layer
@@ -168,7 +176,7 @@ class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
                 scaling = self.scaling[name]
 
                 # Cast input to correct dtype # TODO: autocast logic?
-                x = x.to( dtype=lora_A.weight.dtype )
+                x = self.cast_input_dtype( x, dtype=lora_A.weight.dtype )
                 
                 # Compute delta with scaling and masking
                 delta = lora_B( lora_A( x ) )
