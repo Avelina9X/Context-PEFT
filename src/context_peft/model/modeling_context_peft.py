@@ -206,7 +206,7 @@ class ContextPeftAdaptorIA3( nn.Module, ContextPeftAdaptorBase ):
 
     def init_adaptor_weights( self ):
         for p in self.ia3_l.values():
-            p.data.fill_( 1.0 )
+            p.data.zero_()
 
     def forward( self, x: torch.Tensor, adaptor_mask=None, *args, **kwargs ):
 
@@ -224,7 +224,7 @@ class ContextPeftAdaptorIA3( nn.Module, ContextPeftAdaptorBase ):
             # Check if that adaptor actuall exists
             if name in ia3_l_keys:
                 # Get gate
-                ia3_l = self.ia3_l[name]
+                ia3_l = self.ia3_l[name] + 1
 
                 # Update scaling gate based on mask
                 ia3_scaling = torch.where( mask, ia3_l * ia3_scaling, ia3_scaling )
