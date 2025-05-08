@@ -8,7 +8,6 @@ from torch.utils.hooks import RemovableHandle
 
 from transformers.models.auto.modeling_auto import AutoModel, AutoModelForCausalLM
 from transformers.modeling_utils import PreTrainedModel, GenerationMixin
-from transformers.cache_utils import Cache
 from transformers.activations import ACT2FN
 
 from .configuration_context_peft import ContextPeftConfig
@@ -48,19 +47,19 @@ class ContextPeftAdaptorBase( ABC ):
 
     @property
     def weight( self ) -> torch.Tensor:
+        """ Gets the base layer weight tensor """
         base_layer = self.get_base_layer()
         if hasattr( base_layer, 'qweight' ):
-            # QuantLinear
-            weight = base_layer.qweight
-        else:
-            # Other layers
-            weight = base_layer.weight
-        return weight # type: ignore
+            return base_layer.qweight
+        return base_layer.weight
 
     @property
-    def bias( self ) -> torch.Tensor:
+    def bias( self ) -> torch.Tensor | None:
+        """ Gets the base layer bias tensor if present """
         base_layer = self.get_base_layer()
-        return base_layer.bias # type: ignore
+        if hasattr( base_layer, 'bias' ):
+            return base_layer.bias
+        return None
 
     @property
     def available_adaptors( self ) -> list[str]:
@@ -68,9 +67,8 @@ class ContextPeftAdaptorBase( ABC ):
         adaptors = set()
         for layer_name in self.adaptor_layer_names:
             module = getattr( self, layer_name )
-            if not isinstance( module, ( nn.ModuleDict, nn.ParameterDict ) ):
-                continue
-            adaptors.update( set( module.keys() ) )
+            if isinstance( module, ( nn.ModuleDict, nn.ParameterDict ) ):
+                adaptors.update( module.keys() )
         return sorted( adaptors )
 
     def set_adaptors_trainable( self, adaptor_names: str | list[str] ):
@@ -87,8 +85,25 @@ class ContextPeftAdaptorBase( ABC ):
                 else:
                     layer.requires_grad_( False )
 
+    # pylint: disable=unused-argument
     def __init__( self, base_layer: nn.Module, configs: dict[str, dict], **kwargs ):
         self.base_layer = base_layer
+
+    @abstractmethod
+    def forward( self, x: torch.Tensor, adaptor_mask: dict[str, torch.Tensor] | None = None, *args, **kwargs ):
+        """ Wrapped adaptor forward method.
+
+        Calls the base layer forward pass and applies adaptation. If the adaptor mask is None
+        or an empty dict the returned value should be equivalent to the base layer's return.
+
+        Args:
+            x (torch.Tensor): Input argument expected by the base layer.
+            adaptor_mask (dict[str, torch.Tensor] | None, optional): Adaptor mask map. Defaults to None.
+
+        Returns:
+            result: a tensor with the same shape and dtype as the base layer's return.
+        """
+        raise NotImplementedError()
 
 class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
     adaptor_layer_names = ( 'lora_A', 'lora_B' )
