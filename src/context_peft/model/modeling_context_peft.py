@@ -4,6 +4,7 @@ from functools import partial
 
 import torch
 import torch.nn as nn
+from torch.utils.hooks import RemovableHandle
 
 from transformers.models.auto.modeling_auto import AutoModel, AutoModelForCausalLM
 from transformers.modeling_utils import PreTrainedModel, GenerationMixin
@@ -130,10 +131,10 @@ class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
             if b.bias is not None:
                 b.bias.data.zero_()
 
-    def forward( self, x: torch.Tensor, *args, **kwargs ):
+    def forward( self, x: torch.Tensor, adaptor_mask=None, *args, **kwargs ):
 
         # Get the adaptor mask
-        adaptor_mask = kwargs.pop( 'adaptor_mask', {} )
+        adaptor_mask = adaptor_mask or {}
 
         # Get a list of adaptors in this layer
         lora_A_keys = self.lora_A.keys()
@@ -141,7 +142,7 @@ class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
         # Compute the original result and dtype
         result = self.base_layer( x, *args, **kwargs )
         result_dtype = result.dtype
-
+        
         # Iterate over all adaptors in the adaptor mask
         for name, mask in adaptor_mask.items():
             # Check if that adaptor actuall exists
@@ -153,9 +154,11 @@ class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
 
                 # Cast input to correct dtype # TODO: autocast logic?
                 x = x.to( dtype=lora_A.weight.dtype )
-
+                
                 # Compute delta with scaling and masking
-                delta = lora_B( lora_A( x ) ) * scaling * mask
+                delta = lora_B( lora_A( x ) )
+                delta = delta * delta.new_tensor( scaling )
+                delta = delta * mask
 
                 # Add delta to result, cast back to correct dtype
                 result = result + delta.to( dtype=result_dtype )
@@ -182,10 +185,10 @@ class ContextPeftAdaptorIA3( nn.Module, ContextPeftAdaptorBase ):
         for p in self.ia3_l.values():
             p.data.fill_( 1.0 )
 
-    def forward( self, x: torch.Tensor, *args, **kwargs ):
+    def forward( self, x: torch.Tensor, adaptor_mask=None, *args, **kwargs ):
 
         # Get the adaptor mask
-        adaptor_mask = kwargs.pop( 'adaptor_mask', {} )
+        adaptor_mask = adaptor_mask or {}
 
         # Get a list of adaptors in this layer
         ia3_l_keys = self.ia3_l.keys()
@@ -233,10 +236,10 @@ class ContextPeftAdaptorBitFit( nn.Module, ContextPeftAdaptorBase ):
         for p in self.bitfit_bias.values():
             p.data.zero_()
 
-    def forward( self, x: torch.Tensor, *args, **kwargs ):
+    def forward( self, x: torch.Tensor, adaptor_mask=None, *args, **kwargs ):
 
         # Get the adaptor mask
-        adaptor_mask = kwargs.pop( 'adaptor_mask', {} )
+        adaptor_mask = adaptor_mask or {}
 
         # Get a list of adaptors in this layer
         bias_keys = self.bitfit_bias.keys()
@@ -272,17 +275,24 @@ class ContextPeftWrapperBase( ABC ):
         """ Get layers to transform.
 
         Args:
-            model (torch.nn.Module): The base model to be adapted.
+            model (nn.Module): The base model to be adapted.
             adaptors (dict): Dictionary of all PEFT adaptors.
 
         Returns:
-            A list of [dict, dict] tuples:
+            layer_map: A list of (dict, dict) tuples:
             - The first dict maps layer names to adaptor names.
             - The second dict provides additional kwargs to specialise the adaptor type.
         """
 
     @classmethod
     def set_layers( cls, model: nn.Module, adaptors: dict, layer_map: list[tuple[dict[str,list[str]], dict]] ):
+        """ Replaces layers with adaptor varaints according to the layer map.
+
+        Args:
+            model (nn.Module): The base model to be adapted.
+            adaptors (dict): Dictionary of all PEFT adaptors.
+            layer_map (list[tuple[dict[str,list[str]], dict]]): Layer map returned by `get_layers()` 
+        """
         # Iterate over layer map getting the layer group and it's kwargs
         for group, kwargs in layer_map:
 
@@ -308,6 +318,12 @@ class ContextPeftWrapperBase( ABC ):
 
     @classmethod
     def replace_layers( cls, model: nn.Module, adaptors: dict ):
+        """ Finds and replaces all layers with adaptor varaints.
+
+        Args:
+            model (nn.Module): The base model to be adapted.
+            adaptors (dict): Dictionary of all PEFT adaptors.
+        """
         # Get layer map
         layer_map = cls.get_layers( model, adaptors )
 
@@ -474,9 +490,8 @@ class ContextPeftPreTrainedModel( PreTrainedModel ):
             module.init_adaptor_weights()
 
 # Special pre forward hook for adaptor mask injection!
-def _adaptor_mask_pre_forward_hook( target, args, kwargs, adaptor_mask ):
-    kwargs[ 'adaptor_mask' ] = adaptor_mask
-    return args, kwargs
+def _adaptor_mask_pre_forward_hook( target, args, adaptor_mask ):
+    return ( *args, adaptor_mask )
 
 class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, GenerationMixin ):
     def __init__( self, config: ContextPeftConfig, load_from_hub=False, **kwargs ):
@@ -571,7 +586,7 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
             skip_unused_adaptors (bool, optional): Skips adaptors inactive for the entire batch. Defaults to False.
 
         Returns:
-            dict[str, torch.Tensor]: _description_
+            dict[str, torch.Tensor]: Adaptor mask map
         """
         
         # Dict which maps adaptor name -> mask
@@ -615,7 +630,7 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
         `others_pad_token_id` have been replaced by the contents of `others_embeds`.
 
         Args:
-            input_ids (torch.LongTensor): Sequence of input token ids with shape [B, S].
+            input_ids (torch.LongTensor): Sequence of input token ids with shape [B, S]
             inputs_embeds (torch.Tensor): Sequence of input embeddings with shape [B, S, D]
             others_embeds (torch.Tensor | None): Sequence of embeddings from another modality with shape [*, *, D]
             others_pad_token_id (int): Padding token id for the other modality. 
@@ -645,29 +660,37 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
         # Reshape back to [B, S, D]
         return inputs_embeds.reshape( i_batch, i_seq, i_dim )
 
-    @contextmanager
-    def _enable_forward_hooks( self, *args, **kwargs ):
-        adaptor_mask = kwargs.pop( 'adaptor_mask', None )
+    @torch.compiler.disable
+    def add_forward_hooks( self, adaptor_mask: dict[str, torch.Tensor] ) -> list[RemovableHandle]:
+        """ Registers forward pre-hooks responsible for injecting the adaptor mask.
 
-        # Skip if PEFT disabled!
-        if adaptor_mask is None:
-            yield
-            return
+        NOTE: hook registration causes graph breaks, so we mark this method as un-graphable.
 
+        Args:
+            adaptor_mask (dict[str, torch.Tensor]): Adaptor mask map.
+
+        Returns:
+            list[RemovableHandle]: List of hooks which MUST be removed.
+        """
         # We must tack hooks to remove after forward!
-        hook_handles = []
+        hook_handles: list[RemovableHandle] = []
 
         # Iterate over all modules and apply hook to adaptors
         for module in self.text_model.modules():
             if isinstance( module, ContextPeftAdaptorBase ):
                 pre_forward = partial( _adaptor_mask_pre_forward_hook, adaptor_mask=adaptor_mask )
-                handle = module.register_forward_pre_hook( pre_forward, with_kwargs=True )
+                handle = module.register_forward_pre_hook( pre_forward, with_kwargs=False )
                 hook_handles.append( handle )
 
-        # Yield to wrapped code
-        yield
+        return hook_handles
 
-        # Finally, remove all hooks
+    @torch.compiler.disable
+    def remove_forward_hooks( self, hook_handles: list[RemovableHandle] ):
+        """ Removes all registered hooks. MUST be called after the forward pass.
+
+        Args:
+            hook_handles (list[RemovableHandle]): List of hooks returned by `add_forward_hooks()` 
+        """
         for handle in hook_handles:
             handle.remove()
 
@@ -688,7 +711,7 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
         skip_unused_adaptors=False,
         **kwargs
     ):
-        # Todo: new logic for input_ids AND inputs_embeds?
+        # TODO: new logic for input_ids AND inputs_embeds?
         if input_ids is None:
             raise ValueError( 'input_ids must always be passed!' )
 
@@ -708,10 +731,17 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
         # Get adaptor mask if peft is enabled, otherwise skip as no adaptors present
         adaptor_mask = self.get_adaptor_mask( input_ids, skip_unused_adaptors ) if self.peft_enabled else None
 
-        # Add adaptor mask forward hooks to all adaptor layers
-        with self._enable_forward_hooks( adaptor_mask=adaptor_mask ):
-            # Forward pass text model with merged embeddings and additional kwargs
-            return self.text_model( inputs_embeds=inputs_embeds, attention_mask=attention_mask, **kwargs )
+        if adaptor_mask is None:
+            # Do a normal forward pass if there are no adaptors
+            outputs = self.text_model( inputs_embeds=inputs_embeds, attention_mask=attention_mask, **kwargs )
+        else:
+            # Inject adaptor mask via hooks -> forward pass -> remove hooks
+            hooks = self.add_forward_hooks( adaptor_mask )
+            outputs = self.text_model( inputs_embeds=inputs_embeds, attention_mask=attention_mask, **kwargs )
+            self.remove_forward_hooks( hooks )
+
+        return outputs
+        
 
     def tie_weights(self):
         # Ensure text model performs weight tying
