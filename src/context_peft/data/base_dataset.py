@@ -145,3 +145,18 @@ class BaseDataset( ABC ):
             num_workers=num_workers,
             **kwargs,
         )
+
+    @abstractmethod
+    def set_optimal_sequence_length( self, pad_to_multiple=32, image_seq_len: int | None = None ) -> tuple[int, int]:
+        """ Calculates and sets a more optimal maximum sequence length.
+
+        Args:
+            pad_to_multiple (int, optional): Integer multiple to pad to. Defaults to 32.
+            image_seq_len (int | None, optional): The (maximum) number of tokens per image. When None we
+                will check for `image_seq_len` or `image_seq_length` in the Processor. Defaults to None.
+
+        Returns:
+            unpadded_sequence_length (int): The unpadded sequence length requried by the dataset.
+            padded_sequence_length (int): The unpadded sequence length padded to the next multiple.
+        """
+        raise NotImplementedError()

@@ -4,6 +4,7 @@ import math
 import random
 import aiohttp
 
+import tqdm
 import torch
 
 from transformers.feature_extraction_utils import BatchFeature
@@ -285,26 +286,49 @@ class CocoDataset( BaseDataset ):
         for row in self.get_validation_split():
             yield self.validation_collate_fn( [ row ] )
 
+    def set_optimal_sequence_length( self, pad_to_multiple=32, image_seq_len: int | None = None ) -> tuple[int, int]:
+        # Get the longest prompt (in image placeholder mode)
+        longest_prompt: tuple[str, ...] = ()
+        longest_prompt_len = 0
+        for prompt in CAPTION_INSTRUCTIONS_MAP:
+            messages = [ make_multimodal_user_turn( prompt, [ '' ] ) ]
+            prompt_str = self.processor.apply_chat_template( messages )
+            prompt_len = len( self.tokenizer.encode( prompt_str ) )
 
-def calculate_padding( vision_model_name: str, pad_to_multiple=32 ) -> int:
-    """ Calculates the recommended COCO sequence for Context-PEFT defaults.
+            if prompt_len > longest_prompt_len:
+                longest_prompt = prompt
+                longest_prompt_len = prompt_len
 
-    IMPORTANT: It is ***not*** recommended to use this if you aren't running
-    the standard experiments. Changing any conifg or processor settings will
-    not give you correct padding estimates! Use with caution!
 
-    Args:
-        vision_model_name (str): Name of the openai CLIP variant.
-        pad_to_multiple (int, optional): Integer multiple to pad to. Defaults to 32.
+        # Get the longest sequence with the longest prompt (in image placeholder mode)
+        longest_example_len = 0
+        for example in tqdm.tqdm( self.get_train_split(), desc='Computing sequence length' ):
+            assert isinstance( example, dict )
+            messages = [
+                make_multimodal_user_turn( longest_prompt, [ '' ] ),
+                make_multimodal_assistant_turn( example[ 'caption' ].strip() )
+            ]
+            example_str = self.processor.apply_chat_template( messages )
+            example_len = len( self.tokenizer.encode( example_str ) )
 
-    Returns:
-        int: Recommended max sequence length.
-    """
-    padding_map = {
-        'openai/clip-vit-base-patch32': 152,
-        'openai/clip-vit-base-patch16': 299,
-        'openai/clip-vit-large-patch14': 359,
-        'openai/clip-vit-large-patch14-336': 659,
-    }
+            if example_len > longest_example_len:
+                longest_example_len = example_len
 
-    return math.ceil( padding_map[ vision_model_name ] / pad_to_multiple ) * pad_to_multiple
+        
+        # Get the image sequence length if not set
+        image_seq_len = image_seq_len or getattr( self.processor, 'image_seq_len', None )
+        image_seq_len = image_seq_len or getattr( self.processor, 'image_seq_length', None )
+
+        if image_seq_len is None:
+            raise ValueError( 'image_seq_len could not be inferred from processor. Please pass image_seq_len!' )
+
+        # Because length contains a placeholder token we subtract 1 and then add image_seq_len
+        unpadded_sequence_length = longest_example_len - 1 + image_seq_len
+
+        # Round up to next multiple
+        padded_sequence_length = math.ceil( unpadded_sequence_length / pad_to_multiple ) * pad_to_multiple
+
+        # Finally, set the sequence length
+        self.sequence_length = padded_sequence_length
+
+        return unpadded_sequence_length, padded_sequence_length
