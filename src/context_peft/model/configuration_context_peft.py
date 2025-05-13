@@ -127,6 +127,7 @@ class ContextPeftConfig( PretrainedConfig ):
         connector_activation: str = 'gelu',
         connector_bias: bool = True,
         connector_trainable: bool = True,
+        connector_dropout: float = 0.0,
 
         peft_type: str | None = None,
         default_peft_config: dict | None = None,
@@ -172,6 +173,7 @@ class ContextPeftConfig( PretrainedConfig ):
         self.connector_activation = connector_activation
         self.connector_bias = connector_bias
         self.connector_trainable = connector_trainable
+        self.connector_dropout = connector_dropout
 
         self.peft_type = peft_type
         self.default_peft_config = default_peft_config

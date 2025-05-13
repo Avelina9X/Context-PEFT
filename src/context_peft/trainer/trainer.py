@@ -186,6 +186,9 @@ class Trainer:
 
             image_pad_token_id=processor.get_image_pad_token_id(),
 
+            connector_trainable=True,
+            connector_dropout=self.trainer_config.connector_dropout,
+
             peft_type=self.trainer_config.peft_type,
             default_peft_config=peft_config,
             adaptors=adaptors,

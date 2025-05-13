@@ -64,6 +64,8 @@ if __name__ == '__main__':
         adam_eps=1e-8,
         max_grad_norm=1.0,
 
+        connector_dropout=0.1,
+
         adaptor_method='connector',
         adaptor_context=None,
         lora_rank=None,

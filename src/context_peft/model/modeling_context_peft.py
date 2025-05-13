@@ -474,16 +474,18 @@ CONTEXT_PEFT_WRAPPER_MAPPING: dict[str, type[ContextPeftWrapperBase]] = {
 }
 
 class ContextPeftConnector( nn.Module ):
-    def __init__( self, in_features: int, out_features: int, connector_activation: str, connector_bias: bool ):
+    def __init__( self, in_features: int, out_features: int, connector_activation: str, connector_bias: bool, connector_dropout: float ):
         super().__init__()
 
         self.in_proj = nn.Linear( in_features, out_features, bias=connector_bias )
         self.out_proj = nn.Linear( out_features, out_features, bias=connector_bias )
         self.act_fn = ACT2FN[connector_activation]
+        self.dropout = nn.Dropout( p=connector_dropout )
 
     def forward( self, x ):
         x = self.in_proj( x )
         x = self.act_fn( x )
+        x = self.dropout( x )
         x = self.out_proj( x )
         return x
 
@@ -560,7 +562,8 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
             config.vision_dim,
             config.text_dim,
             config.connector_activation,
-            config.connector_bias
+            config.connector_bias,
+            config.connector_dropout,
         )
 
         # Set connector trainable

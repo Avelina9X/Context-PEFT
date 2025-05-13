@@ -43,6 +43,8 @@ class TrainerConfig:
     adam_eps: float = field( default=1e-8 )
     max_grad_norm: float = field( default=1.0 )
 
+    connector_dropout: float = field( default=0.0 )
+
     adaptor_method: ADAPTOR_METHODS = field( default='connector' )
     adaptor_context: Optional[ADAPTOR_CONTEXTS] = field( default=None )
     lora_rank: Optional[int] = field( default=None )
