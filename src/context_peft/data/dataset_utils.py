@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from itertools import count
 
+from PIL import Image
 import torch
 from datasets import Dataset
 
@@ -108,6 +109,35 @@ def make_multimodal_user_turn( sub_strings: tuple[str, ...], paths: list[str] ) 
     for string in sub_strings:
         if string == '<image>':
             contents.append( { 'type': 'image', 'path': paths.pop( 0 ) } )
+        else:
+            contents.append( { 'type': 'text', 'text': string } )
+    
+    if len( paths ) != 0:
+        raise ValueError( 'Missmatch between number of images and number of paths!' )
+    
+    return {
+        'role': 'user',
+        'content': contents,
+    }
+
+def make_multimodal_user_turn_from_images( sub_strings: tuple[str, ...], paths: list[Image.Image] ) -> dict:
+    """ Creates a single chat message turn from string parts and a PIL image.
+
+    All strings within `sub_strings` will be treated as type text, except for a string
+    exactly matching `"<image>"` which will become type image with the given image. 
+
+    Args:
+        sub_strings (tuple[str, ...]): A tuple of strings defining the message structure. 
+        paths (list[Image]): List of images.
+
+    Returns:
+        dict: A single user message turn to be added to a conversation list.
+    """
+    paths = paths.copy()
+    contents = []
+    for string in sub_strings:
+        if string == '<image>':
+            contents.append( { 'type': 'image', 'image': paths.pop( 0 ) } )
         else:
             contents.append( { 'type': 'text', 'text': string } )
     

@@ -3,6 +3,7 @@ from typing import Any, Optional, Union, Literal, TypeAlias, get_args
 
 ADAPTOR_METHODS: TypeAlias = Literal['connector', 'fullft', 'lora', 'bitfit', 'ia3']
 ADAPTOR_CONTEXTS: TypeAlias = Literal['image', 'text', 'both', 'shared']
+COMPILE_MODES: TypeAlias = Literal['default', 'reduce-overhead', 'max-autotune', 'max-autotune-no-cudagraphs']
 
 @dataclass
 class TrainerConfig:
@@ -22,6 +23,8 @@ class TrainerConfig:
     dataset: Literal['coco'] = field( default='coco' )
     sequence_length: int = field( default=-1 )
     pad_to_multiple: int = field( default=32 )
+    dataset_train_workers: int = field( default=1 )
+    dataset_validation_worker: bool = field( default=False )
 
     num_train_epochs: float = field( default=1.0 )
     logging_steps: int = field( default=64 )
@@ -43,6 +46,9 @@ class TrainerConfig:
     adaptor_method: ADAPTOR_METHODS = field( default='connector' )
     adaptor_context: Optional[ADAPTOR_CONTEXTS] = field( default=None )
     lora_rank: Optional[int] = field( default=None )
+
+    train_compile_mode: Optional[COMPILE_MODES] = field( default=None )
+    validation_compile_mode: Optional[COMPILE_MODES] = field( default=None )
 
     def __post_init__( self ):
         self._validate_stage()

@@ -1,9 +1,13 @@
 from collections.abc import Iterator
+from io import BytesIO
 import os
 import math
 import random
+import base64
+
 import aiohttp
 
+from PIL import Image
 import tqdm
 import torch
 
@@ -22,7 +26,8 @@ from .base_dataset import BaseDataset
 from .dataset_utils import (
     compute_assistant_mask,
     make_multimodal_assistant_turn,
-    make_multimodal_user_turn
+    make_multimodal_user_turn,
+    make_multimodal_user_turn_from_images,
 )
 
 
@@ -99,9 +104,11 @@ def _train_collate_fn(
         prompt = random.choice( caption_instruction_map )
         caption = example[ 'caption' ]
         path = os.path.join( coco_train_folder, example[ 'file_name' ] )
+        image = Image.open( path )
+        image.load()
 
         messages.append( [
-            make_multimodal_user_turn( prompt, [ path ] ),
+            make_multimodal_user_turn_from_images( prompt, [ image ] ),
             make_multimodal_assistant_turn( caption.strip() )
         ] )
 
@@ -132,22 +139,22 @@ def _train_collate_fn(
 
 def _validation_collate_fn(
     examples: list,
-    coco_validation_folder: str,
     padding_size: int,
     processor: ProcessorMixin,
     assistant_prefix: list[int],
     assistant_suffix: list[int],
     caption_instruction: tuple[str, ...],
+    valid_image_cache,
 ):
     pad_to = padding_size + 1
 
     messages = []
 
     for example in examples:
-        path = os.path.join( coco_validation_folder, example[ 'file_name' ] )
+        image = valid_image_cache[ example[ 'file_name' ] ]
         for caption in example[ 'captions' ]:
             messages.append( [
-                make_multimodal_user_turn( caption_instruction, [ path ] ),
+                make_multimodal_user_turn_from_images( caption_instruction, [ image ] ),
                 make_multimodal_assistant_turn( caption.strip() )
             ] )
 
@@ -248,6 +255,14 @@ class CocoDataset( BaseDataset ):
         dataset = load_dataset( 'phiyodr/coco2017', cache_dir=cache_dir )
         assert isinstance( dataset, DatasetDict )
 
+        self.valid_image_cache = {}
+        for row in tqdm.tqdm( dataset[ 'validation' ], desc='Loading validation images' ):
+            file_name = row[ 'file_name' ]
+            file_path = os.path.join( valid_folder, file_name )
+            image = Image.open( file_path )
+            image.load()
+            self.valid_image_cache[ file_name ] = image
+
         # Apply map to split captions
         self.train_split = _split_captions( dataset[ 'train' ] )
 
@@ -268,18 +283,18 @@ class CocoDataset( BaseDataset ):
             processor=self.processor,
             assistant_prefix=self.assistant_prefix,
             assistant_suffix=self.assistant_suffix,
-            caption_instruction_map=CAPTION_INSTRUCTIONS_MAP
+            caption_instruction_map=CAPTION_INSTRUCTIONS_MAP,
         )
     
     def validation_collate_fn( self, examples: list ) -> BatchFeature:
         return _validation_collate_fn(
             examples=examples,
-            coco_validation_folder=self.valid_folder,
             padding_size=self.sequence_length,
             processor=self.processor,
             assistant_prefix=self.assistant_prefix,
             assistant_suffix=self.assistant_suffix,
-            caption_instruction=CAPTION_INSTRUCTIONS_MAP[0]
+            caption_instruction=CAPTION_INSTRUCTIONS_MAP[0],
+            valid_image_cache=self.valid_image_cache
         )
     
     def validation_iterator(self) -> Iterator[BatchFeature]:

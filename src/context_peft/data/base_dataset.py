@@ -1,3 +1,4 @@
+import gc
 from collections.abc import Iterator
 from abc import ABC, abstractmethod
 
@@ -16,10 +17,21 @@ class PrefetchDataset( dataloader.IterableDataset ):
         self.dataset = dataset
 
     def __iter__( self ):
+        gc.collect()
         info = dataloader.get_worker_info()
         num_workers = info.num_workers if info is not None else 1
         worker_id = info.id if info is not None else 0
         for i in self.dataset.train_iterator( num_workers=num_workers, worker_id=worker_id ):
+            yield i
+
+class PrefetchValidationDataset( dataloader.IterableDataset ):
+    def __init__( self, dataset: 'BaseDataset' ):
+        super().__init__()
+        self.dataset = dataset
+
+    def __iter__( self ):
+        gc.collect()
+        for i in self.dataset.validation_iterator():
             yield i
 
 class BaseDataset( ABC ):
@@ -143,6 +155,27 @@ class BaseDataset( ABC ):
             prefetch_dataset,
             batch_size=None,
             num_workers=num_workers,
+            **kwargs,
+        )
+
+    def validation_dataloader( self, worker: bool, **kwargs ) -> dataloader.DataLoader:
+        """ Creates a torch DataLoader with parallel support.
+
+        Args:
+            num_workers (int): The number of workers to split loading across.
+            seed_start (int, optional): Starting shuffle seed. Defaults to 0.
+            seed_step (int, optional): Step size to increment seed by each epoch. Defaults to 1.
+            kwargs: Any additional kwargs that `DataLoader` accepts apart from batch_size.
+
+        Returns:
+            dataloader.DataLoader: Initialised DataLoader
+        """
+        prefetch_dataset = PrefetchValidationDataset( self )
+
+        return dataloader.DataLoader(
+            prefetch_dataset,
+            batch_size=None,
+            num_workers=1 if worker else 0,
             **kwargs,
         )
 
