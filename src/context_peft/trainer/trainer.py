@@ -133,7 +133,6 @@ class Trainer:
         self.device = model.device
 
         self.dataset = self.get_dataset()
-        self._train_iterator = iter( self.get_train_dataloader() )
         self.training_schedule = self.get_training_schedule()
         self.optimizer = self.get_optimizer()
         self.lr_schedule = self.get_lr_schedule()
@@ -398,7 +397,7 @@ class Trainer:
 
         self.model.eval()
 
-        for micro_batch in tqdm.tqdm( self.get_validation_dataloader(), total=len( self.dataset.get_validation_split() ), smoothing=0.0 ):
+        for micro_batch in tqdm.tqdm( self.get_validation_dataloader(), total=len( self.dataset.get_validation_split() ), smoothing=0.0, disable=True ):
             micro_batch = micro_batch.to( self.device )
             labels: torch.Tensor = micro_batch.pop( 'labels' )
 
@@ -413,6 +412,28 @@ class Trainer:
         ppl = ppl_metric.compute().item()
 
         return loss, acc, ppl
+
+    def evaluation( self ):
+        self.model.eval()
+
+        for inputs, targets in tqdm.tqdm( self.dataset.evaluation_dataloader( True ), total=len( self.dataset.get_validation_split() ) ):
+            inputs = inputs.to( self.device )
+
+            input_len = inputs.input_ids.shape[-1]
+
+            with torch.autocast( device_type=self.device.type, dtype=torch.bfloat16 ):
+                out = self.model.generate(
+                    **inputs,
+                    pad_token_id=self.processor.tokenizer.pad_token_id if self.processor.tokenizer.pad_token_id is not None else self.processor.tokenizer.eos_token_id,
+                    max_length=self.dataset.sequence_length,
+                    do_sample=False,
+                    return_dict_in_generate=False,
+                    skip_unused_adaptors=True
+                )
+
+            assert isinstance( out, torch.Tensor )
+            print( *targets, sep='\n' )
+            print( 'Prediction:', repr( self.processor.tokenizer.decode( out.squeeze( 0 ).cpu().tolist()[ input_len : ], skip_special_tokens=True ) ) )
         
 
     def train( self ):
@@ -420,7 +441,7 @@ class Trainer:
         if self.device.type == 'cuda':
             torch.cuda.empty_cache()
         
-        
+        train_iterator = iter( self.get_train_dataloader() )
 
         accumulation_steps = self.trainer_config.batch_size // self.trainer_config.micro_batch_size
 
@@ -428,10 +449,10 @@ class Trainer:
         acc_metric = metrics.Mean().to( self.device )
         ppl_metric = metrics.Mean().to( self.device )
 
-        for _ in tqdm.tqdm( range( self.training_schedule.total_training_steps ), smoothing=0.0, disable=False ):            
+        for _ in tqdm.tqdm( range( self.training_schedule.total_training_steps ), smoothing=0.0, disable=True ):            
             self.model.train()
             for _ in range( accumulation_steps ):
-                micro_batch: BatchFeature = next( self._train_iterator ).to( device=self.device )
+                micro_batch: BatchFeature = next( train_iterator ).to( device=self.device )
                 labels: torch.Tensor = micro_batch.pop( 'labels' )
                 loss, acc, ppl = self.train_forward_pass( micro_batch, labels )
 
@@ -451,6 +472,7 @@ class Trainer:
             self.optimizer.zero_grad()
 
             if self.train_step % self.training_schedule.evaluation_interval_steps == 0 or self.train_step == self.training_schedule.total_training_steps:
+                self.evaluation()
                 print( f'Evaluation time {self.train_step}' )
 
             if self.train_step % self.training_schedule.validation_interval_steps == 0 or self.train_step == self.training_schedule.total_training_steps:

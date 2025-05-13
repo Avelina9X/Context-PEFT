@@ -800,6 +800,9 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
             **kwargs,
         )
 
+        assert inputs_embeds is None
+        model_inputs.pop( 'inputs_embeds' )
+
         # TODO: improve this? Copied from Gemma3
         # Only pass pixel_values during pre-fill
         if cache_position[0] == 0: # type: ignore

@@ -183,6 +183,27 @@ def _validation_collate_fn(
 
     return BatchFeature( inputs, tensor_type='pt' )
 
+def _evaluation_collate_fn(
+    example: dict,
+    processor: ProcessorMixin,
+    caption_instruction: tuple[str, ...],
+    valid_image_cache,
+):
+    image = valid_image_cache[ example[ 'file_name' ] ]
+    
+    message = [ make_multimodal_user_turn_from_images( caption_instruction, [ image ] ) ]
+    
+    batch: BatchFeature = processor.apply_chat_template(
+        message,
+        tokenize=True,
+        return_tensors='pt',
+        return_dict=True,
+        add_generation_prompt=True,
+    ) # type: ignore
+
+    captions = [ caption.strip() for caption in example[ 'captions' ] ]
+
+    return batch, captions
 
 def _split_captions_fn( examples ):
     rows = []
@@ -296,10 +317,23 @@ class CocoDataset( BaseDataset ):
             caption_instruction=CAPTION_INSTRUCTIONS_MAP[0],
             valid_image_cache=self.valid_image_cache
         )
+
+    def evaluation_collate_fn( self, example: dict ) -> tuple[BatchFeature, list[str]]:
+        return _evaluation_collate_fn(
+            example=example,
+            processor=self.processor,
+            caption_instruction=CAPTION_INSTRUCTIONS_MAP[0],
+            valid_image_cache=self.valid_image_cache
+        )
     
-    def validation_iterator(self) -> Iterator[BatchFeature]:
+    def validation_iterator( self ) -> Iterator[BatchFeature]:
         for row in self.get_validation_split():
             yield self.validation_collate_fn( [ row ] )
+
+    def evaluation_iterator( self ) -> Iterator[tuple[BatchFeature, list[str]]]:
+        for row in self.get_validation_split():
+            assert isinstance( row, dict )
+            yield self.evaluation_collate_fn( row )
 
     def set_optimal_sequence_length( self, pad_to_multiple=32, image_seq_len: int | None = None ) -> tuple[int, int]:
         # Get the longest prompt (in image placeholder mode)

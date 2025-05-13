@@ -1,4 +1,3 @@
-
 import torch
 
 from trainer.trainer import Trainer
@@ -11,21 +10,30 @@ if __name__ == '__main__':
     )
 
     vision_model_name = 'openai/clip-vit-base-patch32'
+    text_model_name = 'Qwen/Qwen1.5-0.5B-Chat'
 
+    text_name_stub = 'Qwen' + text_model_name.split( 'Qwen1.5-' )[-1]
+    vision_name_stub = 'Clip' + ( 'L' if 'large' in vision_model_name else 'B' ) + vision_model_name.split( 'patch' )[-1]
+
+    run_name = f'CPEFT_Stage1_abl_{text_name_stub}_{vision_name_stub}'
+
+    print( run_name )
+
+    
     seq_len = {
         'openai/clip-vit-base-patch32': 160,
         'openai/clip-vit-base-patch16': 320,
         'openai/clip-vit-large-patch14': 384,
-        'openai/clip-vit-large-patch14-336': -1,
+        'openai/clip-vit-large-patch14-336': 704,
     }[ vision_model_name ]
 
     # torch._dynamo.config.compiled_autograd = False
     
     trainer_config = TrainerConfig(
-        run_name='placeholder',
+        run_name=run_name,
         output_dir='placeholder',
         
-        text_model_name='Qwen/Qwen1.5-0.5B-Chat',
+        text_model_name=text_model_name,
         vision_model_name=vision_model_name,
 
         stage='stage1',
@@ -40,9 +48,9 @@ if __name__ == '__main__':
         dataset_validation_worker=True,
 
         num_train_epochs=8.0,
-        logging_steps=256 * 4,
-        validation_interval=4 // 4,
-        evaluation_interval=1600,
+        logging_steps=256,
+        validation_interval=4,
+        evaluation_interval=4,
 
         learning_rate=1e-4,
         learning_rate_schedule='constant',

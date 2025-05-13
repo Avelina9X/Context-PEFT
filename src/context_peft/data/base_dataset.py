@@ -34,6 +34,16 @@ class PrefetchValidationDataset( dataloader.IterableDataset ):
         for i in self.dataset.validation_iterator():
             yield i
 
+class PrefetchEvaluationDataset( dataloader.IterableDataset ):
+    def __init__( self, dataset: 'BaseDataset' ):
+        super().__init__()
+        self.dataset = dataset
+
+    def __iter__( self ):
+        gc.collect()
+        for i in self.dataset.evaluation_iterator():
+            yield i
+
 class BaseDataset( ABC ):
     """ Base dataset class for multimodal image-text datasets.
 
@@ -105,6 +115,19 @@ class BaseDataset( ABC ):
             BatchFeature: A feature dict containing all inputs needed for the forward pass and a `labels` item
         """
         raise NotImplementedError()
+
+    @abstractmethod
+    def evaluation_collate_fn( self, example: dict ) -> tuple[BatchFeature, list[str]]:
+        """ Constructs a BatchFeature and list of gold targets.
+
+        Args:
+            example (dict): A single evaluation example.
+
+        Returns:
+            out (tuple[BatchFeature, list[str]]): A feature dict containing all inputs needed for the forward pass
+                and a list of strings corresponding to gold targets.
+        """
+        raise NotImplementedError()
     
     def train_iterator( self, seed_start=0, seed_step=1, num_workers=1, worker_id=0 ) -> Iterator[BatchFeature]:
         """ Creates an iterator over the dataset which performs shuffling, and yields BatchFeatures
@@ -134,7 +157,16 @@ class BaseDataset( ABC ):
         Yields:
             BatchFeature: A feature dict containing all inputs needed for the forward pass and a `labels` item
         """
+        raise NotImplementedError()
 
+    @abstractmethod
+    def evaluation_iterator( self ) -> Iterator[tuple[BatchFeature, list[str]]]:
+        """ Creates an iterator over the evaluation split, yielding BatchFeatures and a list of gold target strings.
+
+        Yields:
+            out (tuple[BatchFeature, list[str]]]): A feature dict containing all inputs needed for the forward pass
+                and a list of strings corresponding to gold targets.
+        """
         raise NotImplementedError()
 
     def train_dataloader( self, num_workers: int, seed_start=0, seed_step=1, **kwargs ) -> dataloader.DataLoader:
@@ -162,15 +194,32 @@ class BaseDataset( ABC ):
         """ Creates a torch DataLoader with parallel support.
 
         Args:
-            num_workers (int): The number of workers to split loading across.
-            seed_start (int, optional): Starting shuffle seed. Defaults to 0.
-            seed_step (int, optional): Step size to increment seed by each epoch. Defaults to 1.
+            worker (bool): When True the dataloader uses an axuilliary worker process for loading.
             kwargs: Any additional kwargs that `DataLoader` accepts apart from batch_size.
 
         Returns:
             dataloader.DataLoader: Initialised DataLoader
         """
         prefetch_dataset = PrefetchValidationDataset( self )
+
+        return dataloader.DataLoader(
+            prefetch_dataset,
+            batch_size=None,
+            num_workers=1 if worker else 0,
+            **kwargs,
+        )
+
+    def evaluation_dataloader( self, worker: bool, **kwargs ) -> dataloader.DataLoader:
+        """ Creates a torch DataLoader with parallel support.
+
+        Args:
+            worker (bool): When True the dataloader uses an axuilliary worker process for loading.
+            kwargs: Any additional kwargs that `DataLoader` accepts apart from batch_size.
+
+        Returns:
+            dataloader.DataLoader: Initialised DataLoader
+        """
+        prefetch_dataset = PrefetchEvaluationDataset( self )
 
         return dataloader.DataLoader(
             prefetch_dataset,
