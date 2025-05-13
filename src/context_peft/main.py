@@ -48,9 +48,9 @@ if __name__ == '__main__':
         dataset_validation_worker=True,
 
         num_train_epochs=8.0,
-        logging_steps=256,
-        validation_interval=4,
-        evaluation_interval=4,
+        logging_steps=64,
+        validation_interval=12,
+        evaluation_interval=48,
 
         learning_rate=1e-4,
         learning_rate_schedule='constant',

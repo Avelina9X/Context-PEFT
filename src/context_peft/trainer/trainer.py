@@ -21,6 +21,7 @@ from model.modeling_context_peft import ContextPeftForConditionalGeneration, CON
 from data.coco import CocoDataset
 
 from data.base_dataset import BaseDataset
+from data.dataset_utils import compute_f1
 
 from .trainer_config import TrainerConfig
 from .lr_schedules import SCHEDULE_MAP
@@ -397,7 +398,10 @@ class Trainer:
 
         self.model.eval()
 
-        for micro_batch in tqdm.tqdm( self.get_validation_dataloader(), total=len( self.dataset.get_validation_split() ), smoothing=0.0, disable=True ):
+        iterator = self.get_validation_dataloader()
+        length = len( self.dataset.get_validation_split() )
+
+        for micro_batch in tqdm.tqdm( iterator, total=length, smoothing=0.0, ncols=80, disable=True ):
             micro_batch = micro_batch.to( self.device )
             labels: torch.Tensor = micro_batch.pop( 'labels' )
 
@@ -416,7 +420,12 @@ class Trainer:
     def evaluation( self ):
         self.model.eval()
 
-        for inputs, targets in tqdm.tqdm( self.dataset.evaluation_dataloader( True ), total=len( self.dataset.get_validation_split() ) ):
+        f1_metric = metrics.Mean()
+
+        iterator = self.dataset.evaluation_dataloader( True )
+        length = len( self.dataset.get_validation_split() )
+
+        for inputs, targets in tqdm.tqdm( iterator, total=length, smoothing=0.0, ncols=80, disable=False ):
             inputs = inputs.to( self.device )
 
             input_len = inputs.input_ids.shape[-1]
@@ -432,8 +441,13 @@ class Trainer:
                 )
 
             assert isinstance( out, torch.Tensor )
-            print( *targets, sep='\n' )
-            print( 'Prediction:', repr( self.processor.tokenizer.decode( out.squeeze( 0 ).cpu().tolist()[ input_len : ], skip_special_tokens=True ) ) )
+            pred = self.processor.tokenizer.decode( out.squeeze( 0 ).cpu().tolist()[ input_len : ], skip_special_tokens=True )
+
+            f1 = compute_f1( pred, targets )
+
+            f1_metric.update( torch.tensor( f1, device=f1_metric.device, dtype=torch.float ) )
+        
+        return f1_metric.compute().item()
         
 
     def train( self ):
@@ -449,7 +463,7 @@ class Trainer:
         acc_metric = metrics.Mean().to( self.device )
         ppl_metric = metrics.Mean().to( self.device )
 
-        for _ in tqdm.tqdm( range( self.training_schedule.total_training_steps ), smoothing=0.0, disable=True ):            
+        for _ in tqdm.tqdm( range( self.training_schedule.total_training_steps ), smoothing=0.0, ncols=80, disable=True ):            
             self.model.train()
             for _ in range( accumulation_steps ):
                 micro_batch: BatchFeature = next( train_iterator ).to( device=self.device )
@@ -472,19 +486,19 @@ class Trainer:
             self.optimizer.zero_grad()
 
             if self.train_step % self.training_schedule.evaluation_interval_steps == 0 or self.train_step == self.training_schedule.total_training_steps:
-                self.evaluation()
-                print( f'Evaluation time {self.train_step}' )
+                f1 = self.evaluation()
+                print( f'Eval step={self.train_step} | F1={f1 * 100:.2f}' )
 
             if self.train_step % self.training_schedule.validation_interval_steps == 0 or self.train_step == self.training_schedule.total_training_steps:
                 loss, acc, ppl = self.validation()
-                print( f'Validation time {self.train_step} | {loss:.2f} {acc:.2f} {ppl:.2f}' )
+                print( f'Val step={self.train_step} | loss={loss:.2f} acc={acc * 100:.2f} ppl={ppl:.2f}' )
 
             if self.train_step % self.trainer_config.logging_steps == 0 or self.train_step == self.training_schedule.total_training_steps:
-                percent = round(self.train_step*self.trainer_config.batch_size/self.training_schedule.samples_per_epoch*100,2)
+                epoch = self.train_step*self.trainer_config.batch_size/self.training_schedule.samples_per_epoch
                 loss = loss_metric.compute().item()
                 acc = acc_metric.compute().item()
                 ppl = ppl_metric.compute().item()
-                print( f'Logging time {self.train_step} | {percent}% | {loss:.2f} {acc:.2f} {ppl:.2f}' )
+                print( f'Log step={self.train_step} | {epoch:.2f} | loss={loss:.2f} acc={acc * 100:.2f} ppl={ppl:.2f}' )
                 loss_metric.reset()
                 acc_metric.reset()
                 ppl_metric.reset()
