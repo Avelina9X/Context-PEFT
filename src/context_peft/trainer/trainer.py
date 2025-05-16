@@ -1,8 +1,12 @@
+import dataclasses
 import gc
 import math
 from dataclasses import dataclass
 import multiprocessing as mp
+import os
+from typing import Any
 
+import wandb
 import tqdm
 import torch
 from torch import device, nn
@@ -95,18 +99,6 @@ def get_peft_config( peft_type: str | None, lora_rank: int | None ):
     else:
         raise ValueError( f'Invalid peft type {peft_type}!' )
 
-def split_batch( batch: BatchFeature, size: int ):
-    items_list = {
-        k: torch.split( v, size ) for k, v in batch.items()
-    }
-
-    lengths = len( items_list[ 'input_ids' ] )
-
-    return [
-        BatchFeature( { k: v[i] for k, v in items_list.items() } )
-        for i in range( lengths )
-    ]
-
 
 @dataclass
 class TrainingSchedule:
@@ -116,11 +108,14 @@ class TrainingSchedule:
     evaluation_interval_steps: int
 
 class Trainer:
-    def __init__(
-        self,
-        trainer_config: TrainerConfig,
-    ):
+    def __init__( self, trainer_config: TrainerConfig ):
         mp.set_start_method( 'spawn' )
+
+        if trainer_config.wandb_mode == 'disabled':
+            torch._logging.set_logs(
+                graph_breaks=True,
+                recompiles=True,
+            )
         
         self.trainer_config = trainer_config
 
@@ -138,11 +133,14 @@ class Trainer:
         self.optimizer = self.get_optimizer()
         self.lr_schedule = self.get_lr_schedule()
 
-        self.accumulation_steps = self.trainer_config.batch_size // self.trainer_config.micro_batch_size
+        self.accumulation_steps = trainer_config.batch_size // trainer_config.micro_batch_size
         self.train_step = 0
 
-        self.train_forward_pass = torch.compile( self._train_forward_pass, mode=self.trainer_config.train_compile_mode ) if self.trainer_config.train_compile_mode is not None else self._train_forward_pass
-        self.validation_forward_pass = torch.compile( self._validation_forward_pass, mode=self.trainer_config.validation_compile_mode ) if self.trainer_config.validation_compile_mode is not None else self._validation_forward_pass
+        self.train_forward_pass = torch.compile( self._train_forward_pass, mode=trainer_config.train_compile_mode ) if trainer_config.train_compile_mode is not None else self._train_forward_pass
+        self.validation_forward_pass = torch.compile( self._validation_forward_pass, mode=trainer_config.validation_compile_mode ) if trainer_config.validation_compile_mode is not None else self._validation_forward_pass
+
+        self._validation_iterator = self.get_validation_dataloader()
+        self._evaluation_iterator = self.get_evaluation_dataloader()
         
     def load_pipeline_stage1( self ) -> tuple[ContextPeftProcessor, ContextPeftForConditionalGeneration]:
         vision_model_name = self.trainer_config.vision_model_name
@@ -155,7 +153,7 @@ class Trainer:
         image_seq_len = ( vision_config.image_size // vision_config.patch_size ) ** 2 + 1
 
         text_config = AutoConfig.from_pretrained( text_model_name )
-        text_tokenizer = AutoTokenizer.from_pretrained( text_model_name, use_fast=True )
+        text_tokenizer = AutoTokenizer.from_pretrained( text_model_name, eos_token='<|im_end|>', use_fast=True )
 
         processor = ContextPeftProcessor(
             image_processor=vision_processor,
@@ -194,6 +192,11 @@ class Trainer:
             adaptors=adaptors,
 
             attn_implementation='sdpa',
+
+            bos_token_id=text_tokenizer.bos_token_id,
+            pad_token_id=text_tokenizer.pad_token_id,
+            eos_token_id=text_tokenizer.eos_token_id,
+            sep_token_id=text_tokenizer.sep_token_id,
         )
 
         model = ContextPeftForConditionalGeneration( config, load_from_hub=True )
@@ -315,9 +318,11 @@ class Trainer:
     def get_train_dataloader( self ):
         kwargs = {}
 
-        # if self.device.type == 'cuda':
-        #     kwargs[ 'pin_memory' ] = True
-        #     kwargs[ 'pin_memory_device' ] = 'cuda'
+        kwargs[ 'prefetch_factor' ] = 4 * self.accumulation_steps
+
+        if self.device.type == 'cuda':
+            kwargs[ 'pin_memory' ] = True
+            kwargs[ 'pin_memory_device' ] = 'cuda'
         
         return self.dataset.train_dataloader(
             num_workers=self.trainer_config.dataset_train_workers,
@@ -328,11 +333,33 @@ class Trainer:
     def get_validation_dataloader( self ):
         kwargs = {}
 
-        # if self.device.type == 'cuda':
-        #     kwargs[ 'pin_memory' ] = True
-        #     kwargs[ 'pin_memory_device' ] = 'cuda'
+        kwargs[ 'prefetch_factor' ] = 4
+
+        if self.device.type == 'cuda':
+            kwargs[ 'pin_memory' ] = True
+            kwargs[ 'pin_memory_device' ] = 'cuda'
+
+        if self.trainer_config.dataset_validation_worker:
+            kwargs[ 'persistent_workers' ] = True
         
         return self.dataset.validation_dataloader(
+            worker=self.trainer_config.dataset_validation_worker,
+            **kwargs
+        )
+
+    def get_evaluation_dataloader( self ):
+        kwargs = {}
+
+        kwargs[ 'prefetch_factor' ] = 4
+
+        if self.device.type == 'cuda':
+            kwargs[ 'pin_memory' ] = True
+            kwargs[ 'pin_memory_device' ] = 'cuda'
+
+        if self.trainer_config.dataset_validation_worker:
+            kwargs[ 'persistent_workers' ] = True
+        
+        return self.dataset.evaluation_dataloader(
             worker=self.trainer_config.dataset_validation_worker,
             **kwargs
         )
@@ -401,12 +428,13 @@ class Trainer:
 
         self.model.eval()
 
-        iterator = self.get_validation_dataloader()
+        iterator = iter( self._validation_iterator )
         length = len( self.dataset.get_validation_split() )
 
         for micro_batch in tqdm.tqdm( iterator, total=length, smoothing=0.0, ncols=80, disable=True ):
-            micro_batch = micro_batch.to( self.device )
+            micro_batch = micro_batch.to( self.device, non_blocking=True )
             labels: torch.Tensor = micro_batch.pop( 'labels' )
+            micro_batch.pop( 'attention_mask' )
 
             loss, acc, ppl = self.validation_forward_pass( micro_batch, labels )
 
@@ -418,25 +446,43 @@ class Trainer:
         acc = acc_metric.compute().item()
         ppl = ppl_metric.compute().item()
 
-        return loss, acc, ppl
+        metric_dict = {
+            f'validation/{self.trainer_config.dataset}/loss': loss,
+            f'validation/{self.trainer_config.dataset}/acc': acc,
+            f'validation/{self.trainer_config.dataset}/ppl': ppl,
+        }
+
+        return metric_dict
 
     def evaluation( self ):
         self.model.eval()
 
         f1_metric = metrics.Mean()
 
-        iterator = self.dataset.evaluation_dataloader( True )
-        length = len( self.dataset.get_validation_split() )
+        iterator = iter( self._evaluation_iterator )
+        # length = len( self.dataset.get_validation_split() )
 
-        for inputs, targets in tqdm.tqdm( iterator, total=length, smoothing=0.0, ncols=80, disable=False ):
-            inputs = inputs.to( self.device )
+        pred_list = []
+        targets_list = []
 
-            input_len = inputs.input_ids.shape[-1]
+        pad_token_id = self.processor.tokenizer.pad_token_id
+        eos_token_id = self.processor.tokenizer.eos_token_id
+
+        for inputs, targets in tqdm.tqdm( iterator, smoothing=0.0, ncols=80, disable=True ):
+            inputs = inputs.to( self.device, non_blocking=True )
+            # inputs.pop( 'attention_mask' )
+
+            batch_size, input_len = inputs.input_ids.shape
+
+            # print( inputs.input_ids.shape, len( targets ) )
+
+            assert batch_size == len( targets )
 
             with torch.autocast( device_type=self.device.type, dtype=torch.bfloat16 ):
                 out = self.model.generate(
                     **inputs,
-                    pad_token_id=self.processor.tokenizer.pad_token_id if self.processor.tokenizer.pad_token_id is not None else self.processor.tokenizer.eos_token_id,
+                    pad_token_id=pad_token_id,
+                    eos_token_id=eos_token_id,
                     max_length=self.dataset.sequence_length,
                     do_sample=False,
                     return_dict_in_generate=False,
@@ -444,13 +490,71 @@ class Trainer:
                 )
 
             assert isinstance( out, torch.Tensor )
-            pred = self.processor.tokenizer.decode( out.squeeze( 0 ).cpu().tolist()[ input_len : ], skip_special_tokens=True )
 
+            pred = out[ :, input_len : ].cpu().tolist()
+
+            for i in range( batch_size ):
+                pred_list.append( pred[i] )
+                targets_list.append( targets[i] )
+
+        for pred_tokens, targets in zip( pred_list, targets_list ):
+            pred = self.processor.tokenizer.decode( pred_tokens, skip_special_tokens=True )
+            # print( pred )
             f1 = compute_f1( pred, targets )
-
             f1_metric.update( torch.tensor( f1, device=f1_metric.device, dtype=torch.float ) )
+
+        metric_dict = {
+            f'evaluation/{self.trainer_config.dataset}/f1': f1_metric.compute().item()
+        }
         
-        return f1_metric.compute().item()
+        return metric_dict
+
+    def get_train_metric_dict( self, loss: float, acc: float, ppl: float ):
+        metric_dict = {
+            f'train/{self.trainer_config.dataset}/loss': loss,
+            f'train/{self.trainer_config.dataset}/acc': acc,
+            f'train/{self.trainer_config.dataset}/ppl': ppl,
+        }
+
+        return metric_dict
+
+    def get_stats_metric_dict( self ):
+        metric_dict = {
+            'stats/train_step': self.train_step,
+            'stats/dataset_epoch': self.train_step * self.trainer_config.batch_size / self.training_schedule.samples_per_epoch,
+            'stats/learning_rate': self.lr_schedule.get_lr( self.train_step )
+        }
+
+        return metric_dict
+
+    def get_log_string( self, metric_dict: dict[str, Any] ):
+        step = metric_dict[ 'stats/train_step' ]
+        epoch = metric_dict[ 'stats/dataset_epoch' ]
+        lr = metric_dict[ 'stats/learning_rate' ]
+
+        train_stats = {
+            't_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'train/' )
+        }
+
+        valid_stats = {
+            'v_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'validation/' )
+        }
+
+        eval_stats = {
+            'e_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'evaluation/' )
+        }
+
+        all_metrics_dict = {
+            **train_stats,
+            **valid_stats,
+            **eval_stats,
+        }
+
+        all_metrics_list = [ f'{k}={v:.3f}' for k, v in all_metrics_dict.items() ]
+
+        all_metrics_string = ' '.join( all_metrics_list )
+
+        return f'step={step} | {epoch:.2f} | {all_metrics_string}'
         
 
     def train( self ):
@@ -460,17 +564,40 @@ class Trainer:
         
         train_iterator = iter( self.get_train_dataloader() )
 
-        accumulation_steps = self.trainer_config.batch_size // self.trainer_config.micro_batch_size
-
         loss_metric = metrics.Mean().to( self.device )
         acc_metric = metrics.Mean().to( self.device )
         ppl_metric = metrics.Mean().to( self.device )
 
+        wandb.login( key=os.environ[ 'WANDB_API_KEY' ] )
+
+        total_params = self.model.num_parameters( only_trainable=False )
+        trainable_params = self.model.num_parameters( only_trainable=True )
+
+        run = wandb.init(
+            project=os.environ[ 'WANDB_PROJECT_NAME' ],
+            mode=self.trainer_config.wandb_mode,
+            name=self.trainer_config.run_name,
+            group=self.trainer_config.wandb_group,
+            config={
+                'trainer_config': dataclasses.asdict( self.trainer_config ),
+                'model_config': self.model.config.to_dict(),
+                'params': {
+                    'total': total_params,
+                    'trainable': trainable_params,
+                }
+            }
+        )
+
         for _ in tqdm.tqdm( range( self.training_schedule.total_training_steps ), smoothing=0.0, ncols=80, disable=True ):            
             self.model.train()
-            for _ in range( accumulation_steps ):
-                micro_batch: BatchFeature = next( train_iterator ).to( device=self.device )
+
+            metric_dict = {}
+            
+            for _ in range( self.accumulation_steps ):
+                micro_batch: BatchFeature = next( train_iterator ).to( device=self.device, non_blocking=True )
                 labels: torch.Tensor = micro_batch.pop( 'labels' )
+                micro_batch.pop( 'attention_mask' )
+                
                 loss, acc, ppl = self.train_forward_pass( micro_batch, labels )
 
                 loss_metric.update( loss )
@@ -489,25 +616,33 @@ class Trainer:
             self.optimizer.zero_grad()
 
             if self.train_step % self.training_schedule.evaluation_interval_steps == 0 or self.train_step == self.training_schedule.total_training_steps:
-                f1 = self.evaluation()
-                print( f'Eval step={self.train_step} | F1={f1 * 100:.2f}' )
+                metric_dict.update( self.evaluation() )
 
             if self.train_step % self.training_schedule.validation_interval_steps == 0 or self.train_step == self.training_schedule.total_training_steps:
-                loss, acc, ppl = self.validation()
-                print( f'Val step={self.train_step} | loss={loss:.2f} acc={acc * 100:.2f} ppl={ppl:.2f}' )
+                metric_dict.update( self.validation() )
 
             if self.train_step % self.trainer_config.logging_steps == 0 or self.train_step == self.training_schedule.total_training_steps:
-                epoch = self.train_step*self.trainer_config.batch_size/self.training_schedule.samples_per_epoch
-                loss = loss_metric.compute().item()
-                acc = acc_metric.compute().item()
-                ppl = ppl_metric.compute().item()
-                print( f'Log step={self.train_step} | {epoch:.2f} | loss={loss:.2f} acc={acc * 100:.2f} ppl={ppl:.2f}' )
+                train_dict = self.get_train_metric_dict(
+                    loss=loss_metric.compute().item(),
+                    acc=acc_metric.compute().item(),
+                    ppl=ppl_metric.compute().item(),
+                )
+
+                metric_dict.update( train_dict )
+                
                 loss_metric.reset()
                 acc_metric.reset()
                 ppl_metric.reset()
 
+                metric_dict.update( self.get_stats_metric_dict() )
+                
+                print( self.get_log_string( metric_dict ) )
+
+                run.log( metric_dict )
+
             if self.train_step == self.training_schedule.total_training_steps:
                 print( 'Done!' )
+                run.finish()
 
             
 

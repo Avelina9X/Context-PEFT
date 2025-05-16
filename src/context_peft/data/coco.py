@@ -184,26 +184,32 @@ def _validation_collate_fn(
     return BatchFeature( inputs, tensor_type='pt' )
 
 def _evaluation_collate_fn(
-    example: dict,
+    examples: list[dict],
     processor: ProcessorMixin,
     caption_instruction: tuple[str, ...],
     valid_image_cache,
 ):
-    image = valid_image_cache[ example[ 'file_name' ] ]
-    
-    message = [ make_multimodal_user_turn_from_images( caption_instruction, [ image ] ) ]
+    message_list = []
+    caption_list = []
+    for example in examples:
+        image = valid_image_cache[ example[ 'file_name' ] ]
+        
+        message = [ make_multimodal_user_turn_from_images( caption_instruction, [ image ] ) ]
+
+        captions = [ caption.strip() for caption in example[ 'captions' ] ]
+
+        message_list.append( message )
+        caption_list.append( captions )
     
     batch: BatchFeature = processor.apply_chat_template(
-        message,
+        message_list,
         tokenize=True,
         return_tensors='pt',
         return_dict=True,
         add_generation_prompt=True,
     ) # type: ignore
 
-    captions = [ caption.strip() for caption in example[ 'captions' ] ]
-
-    return batch, captions
+    return batch, caption_list
 
 def _split_captions_fn( examples ):
     rows = []
@@ -318,9 +324,9 @@ class CocoDataset( BaseDataset ):
             valid_image_cache=self.valid_image_cache
         )
 
-    def evaluation_collate_fn( self, example: dict ) -> tuple[BatchFeature, list[str]]:
+    def evaluation_collate_fn( self, examples: list[dict] ) -> tuple[BatchFeature, list[list[str]]]:
         return _evaluation_collate_fn(
-            example=example,
+            examples=examples,
             processor=self.processor,
             caption_instruction=CAPTION_INSTRUCTIONS_MAP[0],
             valid_image_cache=self.valid_image_cache
@@ -330,10 +336,18 @@ class CocoDataset( BaseDataset ):
         for row in self.get_validation_split():
             yield self.validation_collate_fn( [ row ] )
 
-    def evaluation_iterator( self ) -> Iterator[tuple[BatchFeature, list[str]]]:
+    def evaluation_iterator( self ) -> Iterator[tuple[BatchFeature, list[list[str]]]]:
+        rows = []
         for row in self.get_validation_split():
             assert isinstance( row, dict )
-            yield self.evaluation_collate_fn( row )
+
+            rows.append( row )
+
+            if len( rows ) == self.batch_size:
+                yield self.evaluation_collate_fn( rows )
+                rows = []
+        if rows:
+            yield self.evaluation_collate_fn( rows )
 
     def set_optimal_sequence_length( self, pad_to_multiple=32, image_seq_len: int | None = None ) -> tuple[int, int]:
         # Get the longest prompt (in image placeholder mode)
@@ -351,7 +365,7 @@ class CocoDataset( BaseDataset ):
 
         # Get the longest sequence with the longest prompt (in image placeholder mode)
         longest_example_len = 0
-        for example in tqdm.tqdm( self.get_train_split(), desc='Computing sequence length' ):
+        for example in tqdm.tqdm( self.get_train_split(), desc='Computing train sequence length' ):
             assert isinstance( example, dict )
             messages = [
                 make_multimodal_user_turn( longest_prompt, [ '' ] ),
@@ -362,6 +376,19 @@ class CocoDataset( BaseDataset ):
 
             if example_len > longest_example_len:
                 longest_example_len = example_len
+
+        for example in tqdm.tqdm( self.get_validation_split(), desc='Computing validation sequence length' ):
+            assert isinstance( example, dict )
+            for caption in example[ 'captions' ]:
+                messages = [
+                    make_multimodal_user_turn( CAPTION_INSTRUCTIONS_MAP[0], [ '' ] ),
+                    make_multimodal_assistant_turn( caption.strip() )
+                ]
+                example_str = self.processor.apply_chat_template( messages )
+                example_len = len( self.tokenizer.encode( example_str ) )
+
+                if example_len > longest_example_len:
+                    longest_example_len = example_len
 
         
         # Get the image sequence length if not set

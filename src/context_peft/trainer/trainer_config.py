@@ -9,7 +9,10 @@ COMPILE_MODES: TypeAlias = Literal['default', 'reduce-overhead', 'max-autotune',
 class TrainerConfig:
 
     run_name: str
-    output_dir: str
+    output_dir: str | None
+    
+    wandb_group: str
+    wandb_mode: Literal['online', 'offline', 'disabled']
 
     text_model_name: Optional[str] = field( default=None )
     vision_model_name: Optional[str] = field( default=None )

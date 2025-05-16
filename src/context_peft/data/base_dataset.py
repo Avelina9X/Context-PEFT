@@ -117,11 +117,11 @@ class BaseDataset( ABC ):
         raise NotImplementedError()
 
     @abstractmethod
-    def evaluation_collate_fn( self, example: dict ) -> tuple[BatchFeature, list[str]]:
+    def evaluation_collate_fn( self, examples: list[dict] ) -> tuple[BatchFeature, list[list[str]]]:
         """ Constructs a BatchFeature and list of gold targets.
 
         Args:
-            example (dict): A single evaluation example.
+            example (list[dict]): A list of evaluation example.
 
         Returns:
             out (tuple[BatchFeature, list[str]]): A feature dict containing all inputs needed for the forward pass
@@ -160,7 +160,7 @@ class BaseDataset( ABC ):
         raise NotImplementedError()
 
     @abstractmethod
-    def evaluation_iterator( self ) -> Iterator[tuple[BatchFeature, list[str]]]:
+    def evaluation_iterator( self ) -> Iterator[tuple[BatchFeature, list[list[str]]]]:
         """ Creates an iterator over the evaluation split, yielding BatchFeatures and a list of gold target strings.
 
         Yields:
