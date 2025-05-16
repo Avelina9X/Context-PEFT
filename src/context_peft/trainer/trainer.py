@@ -1,31 +1,26 @@
-import dataclasses
+import os
 import gc
 import math
+import dataclasses
 from dataclasses import dataclass
 import multiprocessing as mp
-import os
 from typing import Any
 
 import wandb
 import tqdm
-import torch
-from torch import device, nn
 
+import torch
+from torch import nn
 from torcheval import metrics
 
+from transformers import CLIPVisionModel, AutoImageProcessor, AutoTokenizer, AutoConfig, BatchFeature
 from transformers.trainer_pt_utils import get_parameter_names
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
-from transformers.feature_extraction_utils import BatchFeature
 
-from transformers import CLIPVisionModel, AutoImageProcessor, AutoTokenizer, AutoConfig, PretrainedConfig, BaseImageProcessor, PreTrainedTokenizerBase
+from model import ContextPeftConfig, ContextPeftProcessor, ContextPeftForConditionalGeneration
+from model.modeling_context_peft import CONTEXT_PEFT_WRAPPER_MAPPING
 
-from model.configuration_context_peft import ContextPeftConfig
-from model.processing_context_peft import ContextPeftProcessor
-from model.modeling_context_peft import ContextPeftForConditionalGeneration, CONTEXT_PEFT_WRAPPER_MAPPING
-from data.coco import CocoDataset
-
-from data.base_dataset import BaseDataset
-from data.dataset_utils import compute_f1
+from data import BaseDataset, CocoDataset, compute_f1
 
 from .trainer_config import TrainerConfig
 from .lr_schedules import SCHEDULE_MAP

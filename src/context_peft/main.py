@@ -1,21 +1,16 @@
 import torch
 
-from trainer.trainer import Trainer
-from trainer.trainer_config import TrainerConfig
+from trainer import Trainer, TrainerConfig
 
 if __name__ == '__main__':
-    torch._logging.set_logs(
-        graph_breaks=True,
-        recompiles=True,
-    )
-
     vision_model_name = 'openai/clip-vit-base-patch32'
-    text_model_name = 'Qwen/Qwen1.5-0.5B-Chat'
+    text_model_name = 'Qwen/Qwen1.5-0.5B'
 
     text_name_stub = 'Qwen' + text_model_name.split( 'Qwen1.5-' )[-1]
     vision_name_stub = 'Clip' + ( 'L' if 'large' in vision_model_name else 'B' ) + vision_model_name.split( 'patch' )[-1]
 
-    run_name = f'CPEFT_Stage1_abl_{text_name_stub}_{vision_name_stub}'
+    run_name = f'TEST_CPEFT_Stage1_abl_{text_name_stub}_{vision_name_stub}'
+    
 
     print( run_name )
 
@@ -33,13 +28,16 @@ if __name__ == '__main__':
         run_name=run_name,
         output_dir='placeholder',
         
+        wandb_group='stage1_abl',
+        wandb_mode='online',
+        
         text_model_name=text_model_name,
         vision_model_name=vision_model_name,
 
         stage='stage1',
         
         batch_size=64,
-        micro_batch_size=-1,
+        micro_batch_size=64,
 
         dataset='coco',
         sequence_length=seq_len,
@@ -48,11 +46,11 @@ if __name__ == '__main__':
         dataset_validation_worker=True,
 
         num_train_epochs=8.0,
-        logging_steps=64,
-        validation_interval=12,
-        evaluation_interval=48,
+        logging_steps=256,
+        validation_interval=4,
+        evaluation_interval=4,
 
-        learning_rate=1e-4,
+        learning_rate=1e-3,
         learning_rate_schedule='constant',
         learning_rate_schedule_kwargs={},
         warmup_steps=64,
@@ -75,6 +73,7 @@ if __name__ == '__main__':
     )
 
     trainer = Trainer( trainer_config )
+    # print( trainer.evaluation() )
     trainer.train()
 
     # for _ in tqdm.tqdm( trainer.get_train_dataloader() ):

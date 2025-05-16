@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Optional, Union, Literal, TypeAlias, get_args
+from typing import Optional, Literal, TypeAlias, get_args
 
 ADAPTOR_METHODS: TypeAlias = Literal['connector', 'fullft', 'lora', 'bitfit', 'ia3']
 ADAPTOR_CONTEXTS: TypeAlias = Literal['image', 'text', 'both', 'shared']
