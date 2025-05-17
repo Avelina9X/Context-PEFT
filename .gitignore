@@ -178,3 +178,7 @@ cython_debug/
 
 wandb/
 secrets.env
+
+app_run.sh
+**.sbatch
+slurm-**.out
