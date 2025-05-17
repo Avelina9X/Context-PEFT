@@ -13,6 +13,7 @@ class TrainerConfig:
     
     wandb_group: str
     wandb_mode: Literal['online', 'offline', 'disabled']
+    wandb_tags: list[str] = field( default_factory=list )
 
     text_model_name: Optional[str] = field( default=None )
     vision_model_name: Optional[str] = field( default=None )

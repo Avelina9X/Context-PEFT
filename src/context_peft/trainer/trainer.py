@@ -573,6 +573,7 @@ class Trainer:
             mode=self.trainer_config.wandb_mode,
             name=self.trainer_config.run_name,
             group=self.trainer_config.wandb_group,
+            tags=self.trainer_config.wandb_tags,
             config={
                 'trainer_config': dataclasses.asdict( self.trainer_config ),
                 'model_config': self.model.config.to_dict(),

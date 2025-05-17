@@ -1,80 +1,20 @@
-import torch
+import argparse
+import yaml
 
 from trainer import Trainer, TrainerConfig
 
 if __name__ == '__main__':
-    vision_model_name = 'openai/clip-vit-base-patch32'
-    text_model_name = 'Qwen/Qwen1.5-0.5B'
+    parser = argparse.ArgumentParser()
+    parser.add_argument( '--config', required=True, type=str )
+    args = parser.parse_args()
 
-    text_name_stub = 'Qwen' + text_model_name.split( 'Qwen1.5-' )[-1]
-    vision_name_stub = 'Clip' + ( 'L' if 'large' in vision_model_name else 'B' ) + vision_model_name.split( 'patch' )[-1]
-
-    run_name = f'TEST_CPEFT_Stage1_abl_{text_name_stub}_{vision_name_stub}'
-    
-
-    print( run_name )
-
-    
-    seq_len = {
-        'openai/clip-vit-base-patch32': 160,
-        'openai/clip-vit-base-patch16': 320,
-        'openai/clip-vit-large-patch14': 384,
-        'openai/clip-vit-large-patch14-336': 704,
-    }[ vision_model_name ]
-
-    # torch._dynamo.config.compiled_autograd = False
+    with open( args.config, 'r', encoding='utf-8' ) as f:
+        config = yaml.safe_load( f )
+        assert isinstance( config, dict )
     
     trainer_config = TrainerConfig(
-        run_name=run_name,
-        output_dir='placeholder',
-        
-        wandb_group='stage1_abl',
-        wandb_mode='online',
-        
-        text_model_name=text_model_name,
-        vision_model_name=vision_model_name,
-
-        stage='stage1',
-        
-        batch_size=64,
-        micro_batch_size=64,
-
-        dataset='coco',
-        sequence_length=seq_len,
-        pad_to_multiple=32,
-        dataset_train_workers=8,
-        dataset_validation_worker=True,
-
-        num_train_epochs=8.0,
-        logging_steps=256,
-        validation_interval=4,
-        evaluation_interval=4,
-
-        learning_rate=1e-3,
-        learning_rate_schedule='constant',
-        learning_rate_schedule_kwargs={},
-        warmup_steps=64,
-
-        weight_decay=0.1,
-        adaptor_decay=False,
-        adam_beta1=0.9,
-        adam_beta2=0.999,
-        adam_eps=1e-8,
-        max_grad_norm=1.0,
-
-        connector_dropout=0.1,
-
-        adaptor_method='connector',
-        adaptor_context=None,
-        lora_rank=None,
-
-        train_compile_mode='default',
-        validation_compile_mode='default',
+        **config
     )
 
     trainer = Trainer( trainer_config )
-    # print( trainer.evaluation() )
     trainer.train()
-
-    # for _ in tqdm.tqdm( trainer.get_train_dataloader() ):
-    #     pass
