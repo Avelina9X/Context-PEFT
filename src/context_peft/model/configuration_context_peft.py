@@ -133,6 +133,7 @@ class ContextPeftConfig( PretrainedConfig ):
         default_peft_config: dict | None = None,
         adaptors: dict | None = None,
         active_adaptors: list | None = None,
+        adaptor_dropout: float = 0.0,
 
         additional_adaptors: dict | None = None,
         additional_active_adaptors: list | None = None,
@@ -179,6 +180,7 @@ class ContextPeftConfig( PretrainedConfig ):
         self.default_peft_config = default_peft_config
         self.adaptors = deepcopy( adaptors or {} )
         self.adaptor_map = {}
+        self.adaptor_dropout = adaptor_dropout
 
         # Add additional adaptors, useful for setting additional kwargs when initialising from an existing config
         if additional_adaptors is not None:

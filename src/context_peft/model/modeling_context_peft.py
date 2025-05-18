@@ -525,6 +525,7 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
         # Set local versions because self.config.* can cause graph breaks
         self.image_pad_token_id = config.image_pad_token_id
         self.adaptor_map = config.adaptor_map
+        self.adaptor_dropout_p = config.adaptor_dropout
 
         # Not needed, but makes code cleaner
         vision_config = config.vision_config
@@ -635,6 +636,10 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
             # Iterate over adaptor's contexts and update mask
             for c in contexts:
                 mask += context_map[c]
+
+            if self.training:
+                drop_mask = torch.rand_like( input_ids, dtype=torch.float ) > self.adaptor_dropout_p
+                mask *= drop_mask
 
             # Write mask into dict
             adaptor_mask[ adaptor_name ] = mask.unsqueeze( -1 )

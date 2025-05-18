@@ -52,6 +52,7 @@ class TrainerConfig:
     adaptor_method: ADAPTOR_METHODS = field( default='connector' )
     adaptor_context: Optional[ADAPTOR_CONTEXTS] = field( default=None )
     lora_rank: Optional[int] = field( default=None )
+    adaptor_dropout: float = field( default=0.0 )
 
     train_compile_mode: Optional[COMPILE_MODES] = field( default=None )
     validation_compile_mode: Optional[COMPILE_MODES] = field( default=None )
