@@ -454,6 +454,8 @@ class Trainer:
         self.model.eval()
 
         f1_metric = metrics.Mean()
+        precision_metric = metrics.Mean()
+        recall_metric = metrics.Mean()
 
         iterator = iter( self._evaluation_iterator )
         # length = len( self.dataset.get_validation_split() )
@@ -496,11 +498,15 @@ class Trainer:
         for pred_tokens, targets in zip( pred_list, targets_list ):
             pred = self.processor.tokenizer.decode( pred_tokens, skip_special_tokens=True )
             # print( pred )
-            f1 = compute_f1( pred, targets )
+            f1, precision, recall = compute_f1( pred, targets )
             f1_metric.update( torch.tensor( f1, device=f1_metric.device, dtype=torch.float ) )
+            precision_metric.update( torch.tensor( precision, device=f1_metric.device, dtype=torch.float ) )
+            recall_metric.update( torch.tensor( recall, device=f1_metric.device, dtype=torch.float ) )
 
         metric_dict = {
-            f'evaluation/{self.trainer_config.dataset}/f1': f1_metric.compute().item()
+            f'evaluation/{self.trainer_config.dataset}/f1': f1_metric.compute().item(),
+            f'evaluation/{self.trainer_config.dataset}/precision': precision_metric.compute().item(),
+            f'evaluation/{self.trainer_config.dataset}/recall': recall_metric.compute().item(),
         }
         
         return metric_dict

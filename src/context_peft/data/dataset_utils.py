@@ -188,6 +188,8 @@ def normalize_answer( s: str ):
 
 def compute_f1( pred: str, gold: list[str] ):
     best_f1 = 0
+    best_precision = 0
+    best_recall = 0
 
     pred_toks = normalize_answer( pred ).split()
 
@@ -202,6 +204,8 @@ def compute_f1( pred: str, gold: list[str] ):
         f1 = ( 2 * precision * recall ) / ( precision + recall )
 
         best_f1 = max( best_f1, f1 )
+        best_precision = max( best_precision, precision )
+        best_recall = max( best_recall, recall )
     
-    return best_f1
+    return best_f1, best_precision, best_recall
 
