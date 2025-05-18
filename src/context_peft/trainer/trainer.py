@@ -5,6 +5,7 @@ import ctypes
 import dataclasses
 from dataclasses import dataclass
 import multiprocessing as mp
+import time
 from typing import Any
 
 import wandb
@@ -520,11 +521,13 @@ class Trainer:
 
         return metric_dict
 
-    def get_stats_metric_dict( self ):
+    def get_stats_metric_dict( self, samplerate_metric: metrics.Metric, total_train_metric: metrics.Metric ):
         metric_dict = {
             'stats/train_step': self.train_step,
             'stats/dataset_epoch': self.train_step * self.trainer_config.batch_size / self.training_schedule.samples_per_epoch,
-            'stats/learning_rate': self.lr_schedule.get_lr( self.train_step )
+            'stats/learning_rate': self.lr_schedule.get_lr( self.train_step ),
+            'stats/samplerate': samplerate_metric.compute().item(),
+            'stats/train_time': total_train_metric.compute().item(),
         }
 
         return metric_dict
@@ -570,6 +573,9 @@ class Trainer:
         acc_metric = metrics.Mean().to( self.device )
         ppl_metric = metrics.Mean().to( self.device )
 
+        train_samplerate_metric = metrics.Mean()
+        total_train_metric = metrics.Sum()
+
         wandb.login( key=os.environ[ 'WANDB_API_KEY' ] )
 
         total_params = self.model.num_parameters( only_trainable=False )
@@ -595,6 +601,8 @@ class Trainer:
             self.model.train()
 
             metric_dict = {}
+
+            step_start_time = time.time()
             
             for _ in range( self.accumulation_steps ):
                 micro_batch: BatchFeature = next( train_iterator ).to( device=self.device, non_blocking=True )
@@ -618,6 +626,14 @@ class Trainer:
             self.optimizer.step()
             self.optimizer.zero_grad()
 
+            step_end_time = time.time()
+
+            time_delta = step_end_time - step_start_time
+            samplerate = time_delta / self.trainer_config.batch_size
+
+            train_samplerate_metric.update( torch.tensor( samplerate, dtype=torch.float, device=train_samplerate_metric.device ) )
+            total_train_metric.update( torch.tensor( time_delta, dtype=torch.float, device=total_train_metric.device ) )
+
             if self.train_step % self.training_schedule.evaluation_interval_steps == 0 or self.train_step == self.training_schedule.total_training_steps:
                 metric_dict.update( self.evaluation() )
 
@@ -637,7 +653,7 @@ class Trainer:
                 acc_metric.reset()
                 ppl_metric.reset()
 
-                metric_dict.update( self.get_stats_metric_dict() )
+                metric_dict.update( self.get_stats_metric_dict( samplerate_metric=train_samplerate_metric, total_train_metric=total_train_metric ) )
                 
                 print( self.get_log_string( metric_dict ), flush=True )
 
