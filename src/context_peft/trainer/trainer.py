@@ -1,6 +1,7 @@
 import os
 import gc
 import math
+import ctypes
 import dataclasses
 from dataclasses import dataclass
 import multiprocessing as mp
@@ -321,7 +322,7 @@ class Trainer:
         
         return self.dataset.train_dataloader(
             num_workers=self.trainer_config.dataset_train_workers,
-            seed_start=hash( self.trainer_config.stage ),
+            seed_start=ctypes.c_uint32( hash( self.trainer_config.stage ) ).value,
             **kwargs
         )
 
@@ -632,7 +633,7 @@ class Trainer:
 
                 metric_dict.update( self.get_stats_metric_dict() )
                 
-                print( self.get_log_string( metric_dict ) )
+                print( self.get_log_string( metric_dict ), flush=True )
 
                 run.log( metric_dict )
 

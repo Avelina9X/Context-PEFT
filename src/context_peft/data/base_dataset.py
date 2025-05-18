@@ -15,13 +15,15 @@ class PrefetchDataset( dataloader.IterableDataset ):
     def __init__( self, dataset: 'BaseDataset', seed_start=0, seed_step=1 ):
         super().__init__()
         self.dataset = dataset
+        self.seed_start = seed_start
+        self.seed_step = seed_step
 
     def __iter__( self ):
         gc.collect()
         info = dataloader.get_worker_info()
         num_workers = info.num_workers if info is not None else 1
         worker_id = info.id if info is not None else 0
-        for i in self.dataset.train_iterator( num_workers=num_workers, worker_id=worker_id ):
+        for i in self.dataset.train_iterator( num_workers=num_workers, worker_id=worker_id, seed_start=self.seed_start, seed_step=self.seed_step ):
             yield i
 
 class PrefetchValidationDataset( dataloader.IterableDataset ):
