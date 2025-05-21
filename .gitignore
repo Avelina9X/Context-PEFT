@@ -182,3 +182,5 @@ secrets.env
 app_run.sh
 **.sbatch
 slurm-**.out
+
+configs/stage1_sweeps
