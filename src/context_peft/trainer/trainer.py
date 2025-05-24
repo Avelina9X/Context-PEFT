@@ -147,7 +147,7 @@ class Trainer:
         
         vision_config = CLIPVisionModel.from_pretrained( vision_model_name ).config
         vision_processor = AutoImageProcessor.from_pretrained( vision_model_name, use_fast=True )
-        image_seq_len = ( vision_config.image_size // vision_config.patch_size ) ** 2 + 1
+        image_seq_len = ( vision_config.image_size // vision_config.patch_size ) ** 2 # TODO: set via config with CLS # FIXME
 
         text_config = AutoConfig.from_pretrained( text_model_name )
         text_tokenizer = AutoTokenizer.from_pretrained( text_model_name, eos_token='<|im_end|>', use_fast=True )
@@ -183,6 +183,7 @@ class Trainer:
 
             connector_trainable=True,
             connector_dropout=self.trainer_config.connector_dropout,
+            connector_bias=self.trainer_config.connector_bias,
 
             peft_type=self.trainer_config.peft_type,
             default_peft_config=peft_config,
@@ -230,7 +231,7 @@ class Trainer:
         batches_total = samples_total / self.trainer_config.batch_size
         log_steps_total = batches_total / self.trainer_config.logging_steps
 
-        total_logs = math.ceil( log_steps_total )
+        total_logs = math.floor( log_steps_total )
         total_training_steps = total_logs * self.trainer_config.logging_steps
         validation_interval_steps = self.trainer_config.logging_steps * self.trainer_config.validation_interval
         evaluation_interval_steps = self.trainer_config.logging_steps * self.trainer_config.evaluation_interval
