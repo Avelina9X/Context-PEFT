@@ -754,7 +754,7 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
 
         # Get image embeddings and project
         if pixel_values is not None:
-            images_embeds = self.vision_model( pixel_values ).last_hidden_state
+            images_embeds = self.vision_model( pixel_values, output_hidden_states=True, return_dict=True ).hidden_states[-2][ :, 1 :, : ] # TODO: SET VIA CONFIG # FIXME
             images_embeds = self.connector[ 'image' ]( images_embeds )
         else:
             images_embeds = None
