@@ -125,7 +125,7 @@ class ContextPeftConfig( PretrainedConfig ):
         image_pad_token_id: int = 151647,
 
         connector_activation: str = 'gelu',
-        connector_bias: bool = True,
+        connector_bias: bool = False,
         connector_trainable: bool = True,
         connector_dropout: float = 0.0,
 

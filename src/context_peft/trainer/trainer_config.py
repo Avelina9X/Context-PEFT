@@ -48,6 +48,7 @@ class TrainerConfig:
     max_grad_norm: float = field( default=1.0 )
 
     connector_dropout: float = field( default=0.0 )
+    connector_bias: bool = field( default=False )
 
     adaptor_method: ADAPTOR_METHODS = field( default='connector' )
     adaptor_context: Optional[ADAPTOR_CONTEXTS] = field( default=None )
