@@ -72,10 +72,10 @@ class TrainerConfig:
             if self.cpeft_model_path is not None:
                 raise ValueError( 'cpeft_model_path must not be specified in stage 1!' )
         elif self.stage == 'stage2':
-            if self.text_model_name is not None:
-                raise ValueError( 'text_model_name must not be specified in stage 2!' )
-            if self.vision_model_name is not None:
-                raise ValueError( 'vision_model_name must not be specified in stage 2!' )
+            if self.text_model_name is None:
+                raise ValueError( 'text_model_name must be carried over from stage 1!' )
+            if self.vision_model_name is None:
+                raise ValueError( 'vision_model_name must be carried over from stage 1!' )
             if self.cpeft_model_path is None:
                 raise ValueError( 'cpeft_model_path must be specified in stage 2!' )
         else:

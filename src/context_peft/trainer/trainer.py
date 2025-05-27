@@ -121,7 +121,7 @@ class Trainer:
         if trainer_config.stage == 'stage1':
             processor, model = self.load_pipeline_stage1()
         else:
-            raise ValueError( 'stage2 not yet implemented!' )
+            processor, model = self.load_pipeline_stage2()
 
         self.processor = processor
         self.model = model
@@ -207,6 +207,65 @@ class Trainer:
             model.cuda() # type: ignore
 
         return processor, model
+
+    def load_pipeline_stage2( self ) -> tuple[ContextPeftProcessor, ContextPeftForConditionalGeneration]:
+        cpeft_model_path = self.trainer_config.cpeft_model_path
+        assert cpeft_model_path is not None
+
+        cpeft_model_path = cpeft_model_path.format( **os.environ )
+
+        processor = ContextPeftProcessor.from_pretrained( cpeft_model_path )
+        assert isinstance( processor, ContextPeftProcessor )
+
+        text_config = ContextPeftConfig.from_pretrained( cpeft_model_path ).get_text_config()
+
+        peft_config = get_peft_config(
+            self.trainer_config.peft_type,
+            self.trainer_config.lora_rank
+        )
+
+        adaptors = get_adaptors(
+            self.trainer_config.dataset,
+            self.trainer_config.adaptor_context,
+            text_config.num_hidden_layers
+        )
+
+        config = ContextPeftConfig.from_pretrained(
+            cpeft_model_path,
+
+            text_trainable=self.trainer_config.text_trainable,
+
+            connector_trainable=True,
+            connector_dropout=self.trainer_config.connector_dropout,
+            connector_bias=self.trainer_config.connector_bias,
+
+            peft_type=self.trainer_config.peft_type,
+            default_peft_config=peft_config,
+            adaptors=adaptors,
+            adaptor_dropout=self.trainer_config.adaptor_dropout,
+
+            attn_implementation='sdpa',
+        )
+
+        model = ContextPeftForConditionalGeneration.from_pretrained(
+            cpeft_model_path,
+            config=config,
+            torch_dtype='auto',
+        )
+
+        if config.text_trainable:
+            model.text_model.float()
+
+        if config.vision_trainable:
+            model.vision_model.float()
+
+        model.train()
+
+        if torch.cuda.is_available():
+            model.cuda() # type: ignore
+
+        return processor, model
+        
         
     def get_dataset( self ) -> BaseDataset:
         if self.trainer_config.dataset == 'coco':
