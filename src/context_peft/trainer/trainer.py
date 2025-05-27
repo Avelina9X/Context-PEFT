@@ -8,6 +8,8 @@ import multiprocessing as mp
 import time
 from typing import Any
 
+import yaml
+
 import wandb
 import tqdm
 
@@ -222,6 +224,8 @@ class Trainer:
         if self.trainer_config.sequence_length == -1:
             upad, pad = dataset.set_optimal_sequence_length( self.trainer_config.pad_to_multiple )
             print( f'Found max sequence length of {upad}, setting sequence length to {pad} due to rounding!' )
+
+            self.trainer_config.sequence_length = pad
 
         return dataset
 
@@ -663,7 +667,26 @@ class Trainer:
 
             if self.train_step == self.training_schedule.total_training_steps:
                 print( 'Done!' )
+
+                if self.trainer_config.output_dir is not None:
+                    output_dir = self.trainer_config.output_dir.format( **os.environ )
+                    output_path = os.path.join( output_dir, self.trainer_config.run_name )
+
+                    config_path = os.path.join( output_path, 'trainer_config.yaml' )
+
+                    os.makedirs( output_path, exist_ok=True )
+
+                    self.model.save_pretrained( output_path )
+                    self.processor.save_pretrained( output_path )
+
+                    config_dict = dataclasses.asdict( self.trainer_config )
+
+                    with open( config_path, 'w', encoding='utf-8' ) as f:
+                        yaml.dump( config_dict, f, default_flow_style=False, sort_keys=False )
+                    
+                
                 run.finish()
+                break
 
             
 
