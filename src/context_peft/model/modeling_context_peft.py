@@ -96,6 +96,7 @@ class ContextPeftAdaptorBase( ABC ):
     # pylint: disable=unused-argument
     def __init__( self, base_layer: nn.Module, configs: dict[str, dict], **kwargs ):
         self.base_layer = base_layer
+        self.adaptor_mask: dict[str, torch.Tensor] | None = None
 
     @abstractmethod
     def forward( self, x: torch.Tensor, adaptor_mask: dict[str, torch.Tensor] | None = None ):
@@ -157,7 +158,7 @@ class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
     def forward( self, x: torch.Tensor, adaptor_mask=None ):
 
         # Get the adaptor mask
-        adaptor_mask = adaptor_mask or {}
+        adaptor_mask = self.adaptor_mask or {}
 
         # Get a list of adaptors in this layer
         lora_A_keys = self.lora_A.keys()
@@ -186,6 +187,8 @@ class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
                 # Add delta to result, cast back to correct dtype
                 result = result + delta.to( dtype=result_dtype )
 
+        self.adaptor_mask = None
+
         # Return updated result
         return result
 
@@ -211,7 +214,7 @@ class ContextPeftAdaptorIA3( nn.Module, ContextPeftAdaptorBase ):
     def forward( self, x: torch.Tensor, adaptor_mask=None ):
 
         # Get the adaptor mask
-        adaptor_mask = adaptor_mask or {}
+        adaptor_mask = self.adaptor_mask or {}
 
         # Get a list of adaptors in this layer
         ia3_l_keys = self.ia3_l.keys()
@@ -238,6 +241,8 @@ class ContextPeftAdaptorIA3( nn.Module, ContextPeftAdaptorBase ):
             result = self.base_layer( x )
             result = ( result * ia3_scaling ).to( dtype=result.dtype )
 
+        self.adaptor_mask = None
+
         # Return updated result
         return result
 
@@ -262,7 +267,7 @@ class ContextPeftAdaptorBitFit( nn.Module, ContextPeftAdaptorBase ):
     def forward( self, x: torch.Tensor, adaptor_mask=None ):
 
         # Get the adaptor mask
-        adaptor_mask = adaptor_mask or {}
+        adaptor_mask = self.adaptor_mask or {}
 
         # Get a list of adaptors in this layer
         bias_keys = self.bitfit_bias.keys()
@@ -283,6 +288,8 @@ class ContextPeftAdaptorBitFit( nn.Module, ContextPeftAdaptorBase ):
 
                 # Add delta to result, cast back to correct dtype
                 result = result + delta.to( dtype=result_dtype )
+
+        self.adaptor_mask = None
 
         # Return updated result
         return result
@@ -690,46 +697,25 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
 
         # Update inputs by other modality (no need to check for missmatch, will throw error!)
         inputs_embeds = inputs_embeds.masked_scatter( token_mask.unsqueeze( -1 ), others_embeds )
+        # inputs_embeds = inputs_embeds.clone()
+        # inputs_embeds[ token_mask ] = others_embeds
 
         # Reshape back to [B, S, D]
         return inputs_embeds.reshape( i_batch, i_seq, i_dim )
 
-    @torch.compiler.disable
-    def add_forward_hooks( self, adaptor_mask: dict[str, torch.Tensor] | None ) -> list[RemovableHandle] | None:
-        """ Registers forward pre-hooks responsible for injecting the adaptor mask.
-
-        NOTE: hook registration causes graph breaks, so we mark this method as un-graphable.
+    def update_masks( self, adaptor_mask: dict[str, torch.Tensor] | None ) -> None:
+        """ Set self.adaptor_mask in all adaptor modules
 
         Args:
             adaptor_mask (dict[str, torch.Tensor]): Adaptor mask map.
-
-        Returns:
-            list[RemovableHandle]: List of hooks which MUST be removed.
         """
         if not adaptor_mask:
-            return None
-        
-        # We must tack hooks to remove after forward!
-        hook_handles: list[RemovableHandle] = []
+            return
 
         # Iterate over all modules and apply hook to adaptors
         for module in self.text_model.modules():
             if isinstance( module, ContextPeftAdaptorBase ):
-                pre_forward = partial( _adaptor_mask_pre_forward_hook, adaptor_mask=adaptor_mask )
-                handle = module.register_forward_pre_hook( pre_forward, with_kwargs=False )
-                hook_handles.append( handle )
-
-        return hook_handles
-
-    @torch.compiler.disable
-    def remove_forward_hooks( self, hook_handles: list[RemovableHandle] ):
-        """ Removes all registered hooks. MUST be called after the forward pass.
-
-        Args:
-            hook_handles (list[RemovableHandle]): List of hooks returned by `add_forward_hooks()` 
-        """
-        for handle in hook_handles:
-            handle.remove()
+                module.adaptor_mask = adaptor_mask
 
     def forward(
         self,
@@ -754,7 +740,7 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
 
         # Get adaptor mask if peft is enabled, otherwise skip as no adaptors present
         adaptor_mask = self.get_adaptor_mask( input_ids, skip_unused_adaptors ) if self.peft_enabled else None
-        hooks = self.add_forward_hooks( adaptor_mask ) if self.peft_enabled else None
+        self.update_masks( adaptor_mask )
 
         # Get text embeddings
         inputs_embeds = self.text_model.get_input_embeddings()( input_ids )
@@ -770,9 +756,6 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
         inputs_embeds = self.inputs_merger( input_ids, inputs_embeds, images_embeds, self.image_pad_token_id )
 
         outputs = self.text_model( inputs_embeds=inputs_embeds, attention_mask=attention_mask, **kwargs )
-
-        if hooks:
-            self.remove_forward_hooks( hooks )
 
         return outputs
         
