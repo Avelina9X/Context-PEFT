@@ -65,31 +65,27 @@ def get_adaptors( task: str, context: str | None, num_hidden_layers: int ):
 
     return adaptors
 
-def get_peft_config( peft_type: str | None, lora_rank: int | None ):
-    if lora_rank and peft_type != 'lora':
-        raise ValueError( 'Cannot specify a lora rank when peft type isn\'t lora!' )
+def get_peft_config( peft_type: str | None, adaptor_kwargs: dict | None ):
+    adaptor_kwargs = adaptor_kwargs or {}
 
     if peft_type is None:
         return None
     elif peft_type == 'lora':
-        return {
+        config = {
             'type': 'lora',
-            'r': lora_rank,
             'target_modules': [ 'q_proj', 'k_proj', 'v_proj', 'o_proj', 'up_proj', 'gate_proj', 'down_proj' ],
             'exclude_modules': None,
-            'lora_alpha': lora_rank,
-            'use_rslora': False,
             'use_bias': 'auto',
         }
     elif peft_type == 'bitfit':
-        return {
+        config = {
             'type': 'bitfit',
             'target_modules': [ 'q_proj', 'k_proj', 'v_proj', 'o_proj', 'up_proj', 'gate_proj', 'down_proj' ],
             'exclude_modules': None,
             'force_bias': False,
         }
     elif peft_type == 'ia3':
-        return {
+        config = {
             'type': 'ia3',
             'target_modules': [ 'k_proj', 'v_proj', 'down_proj' ],
             'exclude_modules': None,
@@ -97,6 +93,10 @@ def get_peft_config( peft_type: str | None, lora_rank: int | None ):
         }
     else:
         raise ValueError( f'Invalid peft type {peft_type}!' )
+
+    config.update( **adaptor_kwargs )
+
+    return config
 
 
 @dataclass
