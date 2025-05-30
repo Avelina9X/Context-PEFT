@@ -110,7 +110,12 @@ class Trainer:
     def __init__( self, trainer_config: TrainerConfig ):
         mp.set_start_method( 'spawn' )
 
-        if trainer_config.wandb_mode == 'disabled':
+        torch.backends.cuda.matmul.allow_tf32 = True # type: ignore # pylint: disable=W0212
+        torch.backends.cudnn.allow_tf32 = True # type: ignore # pylint: disable=W0212
+        torch._dynamo.config.cache_size_limit = 1024 * 1024 * 1024 # type: ignore # pylint: disable=W0212
+        torch._dynamo.config.compiled_autograd = False # type: ignore # pylint: disable=W0212
+
+        if trainer_config.wandb_mode == 'disabled' or True:
             torch._logging.set_logs(
                 graph_breaks=True,
                 recompiles=True,
@@ -135,8 +140,8 @@ class Trainer:
         self.accumulation_steps = trainer_config.batch_size // trainer_config.micro_batch_size
         self.train_step = 0
 
-        self.train_forward_pass = torch.compile( self._train_forward_pass, mode=trainer_config.train_compile_mode ) if trainer_config.train_compile_mode is not None else self._train_forward_pass
-        self.validation_forward_pass = torch.compile( self._validation_forward_pass, mode=trainer_config.validation_compile_mode ) if trainer_config.validation_compile_mode is not None else self._validation_forward_pass
+        self.train_forward_pass = torch.compile( self._train_forward_pass, mode=trainer_config.train_compile_mode, dynamic=False ) if trainer_config.train_compile_mode is not None else self._train_forward_pass
+        self.validation_forward_pass = None
 
         self._validation_iterator = self.get_validation_dataloader()
         self._evaluation_iterator = self.get_evaluation_dataloader()
@@ -163,7 +168,7 @@ class Trainer:
 
         peft_config = get_peft_config(
             self.trainer_config.peft_type,
-            self.trainer_config.lora_rank
+            self.trainer_config.adaptor_kwargs
         )
 
         adaptors = get_adaptors(
@@ -205,6 +210,7 @@ class Trainer:
 
         if torch.cuda.is_available():
             model.cuda() # type: ignore
+            torch.backends.cuda.enable_math_sdp( False )
 
         return processor, model
 
@@ -221,7 +227,7 @@ class Trainer:
 
         peft_config = get_peft_config(
             self.trainer_config.peft_type,
-            self.trainer_config.lora_rank
+            self.trainer_config.adaptor_kwargs,
         )
 
         adaptors = get_adaptors(
@@ -257,6 +263,9 @@ class Trainer:
 
         if config.vision_trainable:
             model.vision_model.float()
+
+        # model.text_model.compile()
+        # model.vision_model.compile()
 
         model.train()
 
@@ -446,7 +455,7 @@ class Trainer:
             ).reshape( B, S )
 
             loss = ( loss * loss_mask ).sum( -1 ) / loss_mask.sum( -1 )
-            ppl = loss.exp()
+            ppl = loss.detach().exp()
             
             loss = loss.mean()
             ppl = ppl.mean()
@@ -456,34 +465,41 @@ class Trainer:
         return loss.detach(), acc.detach(), ppl.detach()
 
     def _validation_forward_pass( self, inputs: BatchFeature, labels: torch.Tensor ):
-        with torch.no_grad():
-            with torch.autocast( self.device.type, dtype=torch.bfloat16 ):
-                logits: torch.Tensor = self.model( **inputs, return_dict=True, use_cache=False ).logits
+        with torch.autocast( self.device.type, dtype=torch.bfloat16 ):
+            logits: torch.Tensor = self.model( **inputs, return_dict=True, use_cache=False ).logits
 
-                B, S, D = logits.shape
-                
-                loss_mask = labels != -100
+            B, S, D = logits.shape
+            
+            loss_mask = labels != -100
 
-                acc = ( logits.argmax( -1 ) == labels ).float()
-                acc = ( acc * loss_mask ).sum( -1 ) / loss_mask.sum( -1 )
-                acc = acc.mean()
+            acc = ( logits.argmax( -1 ) == labels ).float()
+            acc = ( acc * loss_mask ).sum( -1 ) / loss_mask.sum( -1 )
+            acc = acc.mean()
 
-                loss = torch.nn.functional.cross_entropy(
-                    input=logits.reshape( B * S, D ).float(),
-                    target=labels.reshape( B * S ),
-                    reduction='none',
-                    ignore_index=-100
-                ).reshape( B, S )
+            loss = torch.nn.functional.cross_entropy(
+                input=logits.reshape( B * S, D ).float(),
+                target=labels.reshape( B * S ),
+                reduction='none',
+                ignore_index=-100
+            ).reshape( B, S )
 
-                loss = ( loss * loss_mask ).sum( -1 ) / loss_mask.sum( -1 )
-                ppl = loss.exp()
-                
-                loss = loss.mean()
-                ppl = ppl.mean()
-                
-            return loss.detach(), acc.detach(), ppl.detach()
+            loss = ( loss * loss_mask ).sum( -1 ) / loss_mask.sum( -1 )
+            ppl = loss.exp()
+            
+            loss = loss.mean()
+            ppl = ppl.mean()
+            
+        return loss, acc, ppl
 
+    @torch.no_grad
     def validation( self ):
+        if self.validation_forward_pass is None:
+            self.validation_forward_pass = (
+                torch.compile( self._validation_forward_pass, mode=self.trainer_config.validation_compile_mode, fullgraph=True )
+                if self.trainer_config.validation_compile_mode is not None
+                else self._validation_forward_pass
+            )
+            
         loss_metric = metrics.Mean().to( self.device )
         acc_metric = metrics.Mean().to( self.device )
         ppl_metric = metrics.Mean().to( self.device )
@@ -516,15 +532,20 @@ class Trainer:
 
         return metric_dict
 
+    @torch.no_grad
     def evaluation( self ):
         self.model.eval()
 
-        f1_metric = metrics.Mean()
-        precision_metric = metrics.Mean()
-        recall_metric = metrics.Mean()
+        f1_metrics = []
+        precision_metrics = []
+        recall_metrics = []
 
         iterator = iter( self._evaluation_iterator )
         # length = len( self.dataset.get_validation_split() )
+
+        pred_batch = []
+        targets_batch = []
+        batch_sizes = []
 
         pred_list = []
         targets_list = []
@@ -534,11 +555,8 @@ class Trainer:
 
         for inputs, targets in tqdm.tqdm( iterator, smoothing=0.0, ncols=80, disable=True ):
             inputs = inputs.to( self.device, non_blocking=True )
-            # inputs.pop( 'attention_mask' )
 
             batch_size, input_len = inputs.input_ids.shape
-
-            # print( inputs.input_ids.shape, len( targets ) )
 
             assert batch_size == len( targets )
 
@@ -555,24 +573,31 @@ class Trainer:
 
             assert isinstance( out, torch.Tensor )
 
-            pred = out[ :, input_len : ].cpu().tolist()
+            pred = out[ :, input_len : ].to( device='cpu', non_blocking=True )
 
+            pred_batch.append( pred )
+            targets_batch.append( targets )
+            batch_sizes.append( batch_size )
+
+        for pred, targets, batch_size in zip( pred_batch, targets_batch, batch_sizes ):
+            pred_cpu = pred.to_list()
+            assert len( pred_cpu ) == len( targets )
             for i in range( batch_size ):
-                pred_list.append( pred[i] )
+                pred_list.append( pred_cpu[i] )
                 targets_list.append( targets[i] )
 
         for pred_tokens, targets in zip( pred_list, targets_list ):
             pred = self.processor.tokenizer.decode( pred_tokens, skip_special_tokens=True )
             # print( pred )
             f1, precision, recall = compute_f1( pred, targets )
-            f1_metric.update( torch.tensor( f1, device=f1_metric.device, dtype=torch.float ) )
-            precision_metric.update( torch.tensor( precision, device=f1_metric.device, dtype=torch.float ) )
-            recall_metric.update( torch.tensor( recall, device=f1_metric.device, dtype=torch.float ) )
+            f1_metrics.append( f1 )
+            precision_metrics.append( precision )
+            recall_metrics.append( recall )
 
         metric_dict = {
-            f'evaluation/{self.trainer_config.dataset}/f1': f1_metric.compute().item(),
-            f'evaluation/{self.trainer_config.dataset}/precision': precision_metric.compute().item(),
-            f'evaluation/{self.trainer_config.dataset}/recall': recall_metric.compute().item(),
+            f'evaluation/{self.trainer_config.dataset}/f1': sum( f1_metrics ) / len( f1_metrics ),
+            f'evaluation/{self.trainer_config.dataset}/precision': sum( precision_metrics ) / len( precision_metrics ),
+            f'evaluation/{self.trainer_config.dataset}/recall': sum( recall_metrics ) / len( recall_metrics ),
         }
         
         return metric_dict
@@ -673,7 +698,6 @@ class Trainer:
                 micro_batch: BatchFeature = next( train_iterator ).to( device=self.device, non_blocking=True )
                 labels: torch.Tensor = micro_batch.pop( 'labels' )
                 micro_batch.pop( 'attention_mask' )
-                
                 loss, acc, ppl = self.train_forward_pass( micro_batch, labels )
 
                 loss_metric.update( loss )
