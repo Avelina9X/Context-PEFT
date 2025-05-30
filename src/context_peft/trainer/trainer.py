@@ -247,11 +247,10 @@ class Trainer:
             attn_implementation='sdpa',
         )
 
-        model = ContextPeftForConditionalGeneration.from_pretrained(
-            cpeft_model_path,
-            config=config,
-            torch_dtype='auto',
-        )
+        og_model = ContextPeftForConditionalGeneration.from_pretrained( cpeft_model_path )
+
+        model = ContextPeftForConditionalGeneration( config=config, load_from_hub=True )
+        model.connector.load_state_dict( og_model.connector.state_dict() )
 
         if config.text_trainable:
             model.text_model.float()
@@ -263,6 +262,7 @@ class Trainer:
 
         if torch.cuda.is_available():
             model.cuda() # type: ignore
+            torch.backends.cuda.enable_math_sdp( False )
 
         return processor, model
         
