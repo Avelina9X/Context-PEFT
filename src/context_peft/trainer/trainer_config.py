@@ -53,6 +53,7 @@ class TrainerConfig:
     adaptor_method: ADAPTOR_METHODS = field( default='connector' )
     adaptor_context: Optional[ADAPTOR_CONTEXTS] = field( default=None )
     lora_rank: Optional[int] = field( default=None )
+    adaptor_kwargs: Optional[dict] = field( default=None )
     adaptor_dropout: float = field( default=0.0 )
 
     train_compile_mode: Optional[COMPILE_MODES] = field( default=None )
@@ -110,7 +111,20 @@ class TrainerConfig:
             raise ValueError( 'adaptor_decay must be False when no adaptors are active!' )
 
         # Ensure lora_rank is set iff adaptor_method is lora
-        if self.adaptor_method == 'lora' and self.lora_rank is None:
-            raise ValueError( 'Adaptor method lora requires lora_rank to be set!' )
+        if self.adaptor_method == 'lora' and self.lora_rank is None and self.adaptor_kwargs is None:
+            raise ValueError( 'Adaptor method lora requires lora_rank or adaptor_kwargs to be set!' )
         if self.adaptor_method != 'lora' and self.lora_rank is not None:
             raise ValueError( f'Cannot set lora_rank for adaptor method {self.adaptor_method}!' )
+        if self.adaptor_method in [ 'connector', 'fullft' ] and self.adaptor_kwargs is not None:
+            raise ValueError( f'Cannot set adaptor_kwargs for adaptor method {self.adaptor_method}!' )
+
+        if self.lora_rank is not None and self.adaptor_kwargs is not None:
+            raise ValueError( f'Cannot set both lora_rank and adaptor_kwargs!' )
+
+        if self.lora_rank is not None:
+            self.lora_rank = None
+            self.adaptor_kwargs = {
+                'r': self.lora_rank,
+                'lora_alpha': self.lora_rank,
+                'use_rslora': False,
+            }
