@@ -47,6 +47,8 @@ class TrainerConfig:
     adam_eps: float = field( default=1e-8 )
     max_grad_norm: float = field( default=1.0 )
 
+    trainable_embeddings: Optional[bool] = field( default=None )
+
     connector_dropout: float = field( default=0.0 )
     connector_bias: bool = field( default=False )
 
@@ -58,6 +60,8 @@ class TrainerConfig:
 
     train_compile_mode: Optional[COMPILE_MODES] = field( default=None )
     validation_compile_mode: Optional[COMPILE_MODES] = field( default=None )
+
+    meta: Optional[dict] = field( default=None )
 
     def __post_init__( self ):
         self._validate_stage()
@@ -128,3 +132,9 @@ class TrainerConfig:
                 'lora_alpha': self.lora_rank,
                 'use_rslora': False,
             }
+
+        if self.adaptor_kwargs is not None and self.adaptor_method == 'lora' and 'initialization' not in self.adaptor_kwargs:
+            self.adaptor_kwargs[ 'initialization' ] = 'kaiming_uniform'
+
+        if self.trainable_embeddings is None:
+            self.trainable_embeddings = self.text_trainable

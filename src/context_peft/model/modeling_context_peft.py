@@ -22,12 +22,6 @@ class ContextPeftAdaptorBase( ABC ):
     # All nn.Module classes the adaptor can wrap
     module_types: tuple[type[nn.Module]]
 
-    def get_base_layer( self ) -> nn.Module:
-        """ Recursively get the base_layer. """
-        base_layer = self
-        while hasattr( base_layer, 'base_layer' ):
-            base_layer = base_layer.base_layer # type: ignore
-        return base_layer # type: ignore
 
     @abstractmethod
     def init_adaptor_weights( self ):
@@ -44,22 +38,6 @@ class ContextPeftAdaptorBase( ABC ):
         `other_param_names` tuple so we can correctly track them!
         """
         raise NotImplementedError()
-
-    @property
-    def weight( self ) -> torch.Tensor:
-        """ Gets the base layer weight tensor """
-        base_layer = self.get_base_layer()
-        if hasattr( base_layer, 'qweight' ):
-            return base_layer.qweight
-        return base_layer.weight
-
-    @property
-    def bias( self ) -> torch.Tensor | None:
-        """ Gets the base layer bias tensor if present """
-        base_layer = self.get_base_layer()
-        if hasattr( base_layer, 'bias' ):
-            return base_layer.bias
-        return None
 
     @property
     def available_adaptors( self ) -> list[str]:
@@ -95,8 +73,20 @@ class ContextPeftAdaptorBase( ABC ):
 
     # pylint: disable=unused-argument
     def __init__( self, base_layer: nn.Module, configs: dict[str, dict], **kwargs ):
-        self.base_layer = base_layer
         self.adaptor_mask: dict[str, torch.Tensor] | None = None
+
+        # Helpers for in/out dim of base layer
+        self.in_features = base_layer.in_features
+        self.out_features = base_layer.out_features
+
+        assert isinstance( self.in_features, int )
+        assert isinstance( self.out_features, int )
+
+        self.weight = base_layer.weight
+        self.bias = getattr( base_layer, 'bias', None )
+    
+    def base_layer( self, x: torch.Tensor ):
+        return nn.functional.linear( x, self.weight, self.bias )
 
     @abstractmethod
     def forward( self, x: torch.Tensor, adaptor_mask: dict[str, torch.Tensor] | None = None ):
@@ -115,25 +105,20 @@ class ContextPeftAdaptorBase( ABC ):
         raise NotImplementedError()
 
 class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
-    adaptor_layer_names = ( 'lora_A', 'lora_B' )
-    other_param_names = ( 'r', 'lora_alpha', 'use_rslora', 'scaling' )
+    adaptor_layer_names = ( 'lora_A', 'lora_B', 'lora_bias' )
+    other_param_names = ( 'r', 'lora_alpha', 'use_rslora', 'scaling', 'initialization' )
     module_types = ( nn.Linear, )
 
     def __init__( self, base_layer: nn.Module, configs: dict[str, dict], **kwargs ):
         super().__init__()
         ContextPeftAdaptorBase.__init__( self, base_layer, configs, **kwargs )
 
-        # Helpers for in/out dim of base layer
-        self.in_features = self.base_layer.in_features
-        self.out_features = self.base_layer.out_features
-
-        assert isinstance( self.in_features, int )
-        assert isinstance( self.out_features, int )
-
         # Set rank, alpha and rslora hyperparameters
         self.r = { k: v['r'] for k, v in configs.items() }
         self.lora_alpha = { k: v['lora_alpha'] for k, v in configs.items() }
         self.use_rslora = { k: v['use_rslora'] for k, v in configs.items() }
+
+        self.initialization = { k: v['initialization'] for k, v in configs.items() }
 
         # Compute and store scaling or rslora scaling parameters
         scaling = { k: self.lora_alpha[k] / self.r[k] for k in configs }
@@ -141,19 +126,27 @@ class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
         self.scaling = { k: rs_scaling[k] if self.use_rslora[k] else scaling[k] for k in configs }
 
         # Compute if bias is enabled based on bool or 'auto' detection
-        bias = { k: self.base_layer.bias is not None if v['use_bias'] == 'auto' else v['use_bias'] for k, v in configs.items() }
+        bias = { k: self.bias is not None if v['use_bias'] == 'auto' else v['use_bias'] for k, v in configs.items() }
 
         # Create all A and B low rank matricies
         self.lora_A = nn.ModuleDict( { k: nn.Linear( self.in_features, self.r[k], False ) for k in configs } )
-        self.lora_B = nn.ModuleDict( { k: nn.Linear( self.r[k], self.out_features, bias[k] ) for k in configs } )
+        self.lora_B = nn.ModuleDict( { k: nn.Linear( self.r[k], self.out_features, False ) for k in configs } )
+        self.lora_bias = nn.ParameterDict( { k: nn.Parameter( torch.empty( self.out_features ) ) for k in configs if bias[k] } )
 
     def init_adaptor_weights( self ):
-        for a in self.lora_A.values():
-            nn.init.kaiming_uniform_( a.weight, a=5 ** 0.5 )
+        for k, a in self.lora_A.items():
+            if self.initialization[k] == 'kaiming_uniform':
+                nn.init.kaiming_uniform_( a.weight, a=5 ** 0.5 )
+            elif self.initialization[k] == 'kaiming_normal':
+                nn.init.kaiming_normal_( a.weight, a=5 ** 0.5 )
+            elif self.initialization[k] == 'gaussian':
+                nn.init.normal_( a.weight, mean=0, std=1.0 / self.r[k] )
+            else:
+                raise ValueError( f'Unknown lora initialization {self.initialization[k]}' )
         for b in self.lora_B.values():
             b.weight.data.zero_()
-            if b.bias is not None:
-                b.bias.data.zero_()
+        for p in self.lora_bias.values():
+            p.data.zero_()
 
     def forward( self, x: torch.Tensor, adaptor_mask=None ):
 
@@ -176,12 +169,18 @@ class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
                 lora_B = self.lora_B[name]
                 scaling = self.scaling[name]
 
+                bias = self.lora_bias.get( name, None )
+
                 # Cast input to correct dtype # TODO: autocast logic?
                 x = self.cast_input_dtype( x, dtype=lora_A.weight.dtype )
                 
                 # Compute delta with scaling and masking
                 delta = lora_B( lora_A( x ) )
                 delta = delta * delta.new_tensor( scaling )
+
+                if bias is not None:
+                    delta = delta + bias.to( dtype=delta.dtype )
+                
                 delta = delta * mask
 
                 # Add delta to result, cast back to correct dtype
@@ -202,7 +201,7 @@ class ContextPeftAdaptorIA3( nn.Module, ContextPeftAdaptorBase ):
         ContextPeftAdaptorBase.__init__( self, base_layer, configs, **kwargs )
 
         self.is_feedforward = is_feedforward
-        dim = self.base_layer.in_features if is_feedforward else self.base_layer.out_features
+        dim = self.in_features if is_feedforward else self.out_features
         assert isinstance( dim, int )
 
         self.ia3_l = nn.ParameterDict( { k: nn.Parameter( torch.empty( dim ) ) for k in configs } )
@@ -255,10 +254,10 @@ class ContextPeftAdaptorBitFit( nn.Module, ContextPeftAdaptorBase ):
         super().__init__()
         ContextPeftAdaptorBase.__init__( self, base_layer, configs, **kwargs )
 
-        dim = self.base_layer.out_features
+        dim = self.out_features
         assert isinstance( dim, int )
 
-        self.bitfit_bias = nn.ParameterDict( { k: nn.Parameter( torch.empty( dim ) ) for k, v in configs.items() if v[ 'force_bias' ] or self.base_layer.bias is not None } )
+        self.bitfit_bias = nn.ParameterDict( { k: nn.Parameter( torch.empty( dim ) ) for k, v in configs.items() if v[ 'force_bias' ] or self.bias is not None } )
 
     def init_adaptor_weights( self ):
         for p in self.bitfit_bias.values():
@@ -281,13 +280,13 @@ class ContextPeftAdaptorBitFit( nn.Module, ContextPeftAdaptorBase ):
             # Check if that adaptor actuall exists
             if name in bias_keys:
                 # Get bias
-                bias = self.bitfit_bias[name]
+                bias = self.bitfit_bias[name].to( dtype=result_dtype )
 
                 # Compute delta with scaling and masking
                 delta = bias * mask
 
                 # Add delta to result, cast back to correct dtype
-                result = result + delta.to( dtype=result_dtype )
+                result = result + delta
 
         self.adaptor_mask = None
 
@@ -560,9 +559,12 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
 
             # Set only active adaptors to be trainable
             self.set_adaptors_trainable( True )
+
+            self.peft_modules = [ module for module in self.text_model.modules() if isinstance( module, ContextPeftAdaptorBase ) ]
         else:
             # No adaptors present, set flag to false
             self.peft_enabled = False
+            self.peft_modules = []
 
         # Module dict for all multi-modal connectors (only text for now)
         self.connector = nn.ModuleDict( {} )
@@ -713,9 +715,8 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
             return
 
         # Iterate over all modules and apply hook to adaptors
-        for module in self.text_model.modules():
-            if isinstance( module, ContextPeftAdaptorBase ):
-                module.adaptor_mask = adaptor_mask
+        for module in self.peft_modules:
+            module.adaptor_mask = adaptor_mask
 
     def forward(
         self,

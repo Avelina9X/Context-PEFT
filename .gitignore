@@ -184,3 +184,7 @@ app_run.sh
 slurm-**.out
 
 configs/stage1_sweeps
+configs/stage2_tests
+configs/stage2_sweeps
+checkpoints/
+src/context_peft/gen**.py

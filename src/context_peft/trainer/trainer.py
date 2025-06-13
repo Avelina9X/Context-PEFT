@@ -125,8 +125,11 @@ class Trainer:
 
         if trainer_config.stage == 'stage1':
             processor, model = self.load_pipeline_stage1()
-        else:
+        elif trainer_config.stage == 'stage2':
             processor, model = self.load_pipeline_stage2()
+        else:
+            raise ValueError( f'Stage {trainer_config.stage} not yet implemented!' )
+        
 
         self.processor = processor
         self.model = model
@@ -140,7 +143,11 @@ class Trainer:
         self.accumulation_steps = trainer_config.batch_size // trainer_config.micro_batch_size
         self.train_step = 0
 
-        self.train_forward_pass = torch.compile( self._train_forward_pass, mode=trainer_config.train_compile_mode, dynamic=False ) if trainer_config.train_compile_mode is not None else self._train_forward_pass
+        self.train_forward_pass = (
+            torch.compile( self._train_forward_pass, mode=trainer_config.train_compile_mode, dynamic=False )
+            if trainer_config.train_compile_mode is not None
+            else self._train_forward_pass
+        )
         self.validation_forward_pass = None
 
         self._validation_iterator = self.get_validation_dataloader()
@@ -253,16 +260,24 @@ class Trainer:
             attn_implementation='sdpa',
         )
 
-        og_model = ContextPeftForConditionalGeneration.from_pretrained( cpeft_model_path )
+        # og_model = ContextPeftForConditionalGeneration.from_pretrained( cpeft_model_path )
 
-        model = ContextPeftForConditionalGeneration( config=config, load_from_hub=True )
-        model.connector.load_state_dict( og_model.connector.state_dict() )
+        # model = ContextPeftForConditionalGeneration( config=config, load_from_hub=True )
+        # model.connector.load_state_dict( og_model.connector.state_dict() )
+
+        model = ContextPeftForConditionalGeneration.from_pretrained( cpeft_model_path, config=config, torch_dtype='auto' )
 
         if config.text_trainable:
             model.text_model.float()
 
         if config.vision_trainable:
             model.vision_model.float()
+
+        if self.trainer_config.trainable_embeddings:
+            model.text_model.get_input_embeddings().requires_grad_( True )
+            model.text_model.float()
+        else:
+            model.text_model.get_input_embeddings().requires_grad_( False )
 
         # model.text_model.compile()
         # model.vision_model.compile()
@@ -580,7 +595,7 @@ class Trainer:
             batch_sizes.append( batch_size )
 
         for pred, targets, batch_size in zip( pred_batch, targets_batch, batch_sizes ):
-            pred_cpu = pred.to_list()
+            pred_cpu = pred.tolist()
             assert len( pred_cpu ) == len( targets )
             for i in range( batch_size ):
                 pred_list.append( pred_cpu[i] )
@@ -666,6 +681,9 @@ class Trainer:
         train_samplerate_metric = metrics.Mean()
         total_train_metric = metrics.Sum()
 
+        grad_norm_max = metrics.Max().to( self.device )
+        grad_norm_avg = metrics.Mean().to( self.device )
+
         wandb.login( key=os.environ[ 'WANDB_API_KEY' ] )
 
         total_params = self.model.num_parameters( only_trainable=False )
@@ -711,9 +729,12 @@ class Trainer:
             for p_group in self.optimizer.param_groups:
                 p_group[ 'lr' ] = self.lr_schedule.get_lr( self.train_step )
 
-            torch.nn.utils.clip_grad_norm_( self.model.parameters(), self.trainer_config.max_grad_norm )
+            total_grad = torch.nn.utils.clip_grad_norm_( self.model.parameters(), self.trainer_config.max_grad_norm )
             self.optimizer.step()
             self.optimizer.zero_grad()
+
+            grad_norm_max.update( total_grad )
+            grad_norm_avg.update( total_grad )
 
             step_end_time = time.time()
 
@@ -743,6 +764,13 @@ class Trainer:
                 ppl_metric.reset()
 
                 metric_dict.update( self.get_stats_metric_dict( samplerate_metric=train_samplerate_metric, total_train_metric=total_train_metric ) )
+                metric_dict.update( {
+                    'grads/max_norm': grad_norm_max.compute().item(),
+                    'grads/avg_norm': grad_norm_avg.compute().item(),
+                } )
+
+                grad_norm_max.reset()
+                grad_norm_avg.reset()
                 
                 print( self.get_log_string( metric_dict ), flush=True )
 

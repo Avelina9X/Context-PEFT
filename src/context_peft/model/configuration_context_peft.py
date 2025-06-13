@@ -59,7 +59,8 @@ def validate_peft_config( config: dict, peft_type: str, adaptor_name: str ):
             'exclude_modules': ( str, list[str], NoneType ),
             'lora_alpha': ( int, ),
             'use_rslora': ( bool, ),
-            'use_bias': ( bool, Literal['auto'] )
+            'use_bias': ( bool, Literal['auto'] ),
+            'initialization': ( str, )
         },
         'ia3': {
             'context': ( str, list[str] ),
