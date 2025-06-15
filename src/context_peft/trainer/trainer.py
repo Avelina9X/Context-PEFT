@@ -1,7 +1,6 @@
 import os
 import gc
 import math
-import ctypes
 import dataclasses
 from dataclasses import dataclass
 import multiprocessing as mp
@@ -283,10 +282,10 @@ class Trainer:
 
         model = ContextPeftForConditionalGeneration.from_pretrained( cpeft_model_path, config=config, torch_dtype='auto' )
 
-        if config.text_trainable:
+        if config.text_trainable: # pylint: disable=E1101
             model.text_model.float()
 
-        if config.vision_trainable:
+        if config.vision_trainable: # pylint: disable=E1101
             model.vision_model.float()
 
         if self.trainer_config.trainable_embeddings:

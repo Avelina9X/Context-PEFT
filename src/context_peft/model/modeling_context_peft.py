@@ -1,10 +1,7 @@
 from abc import ABC, abstractmethod
-from contextlib import contextmanager
-from functools import partial
 
 import torch
 import torch.nn as nn
-from torch.utils.hooks import RemovableHandle
 
 from transformers.models.auto.modeling_auto import AutoModel, AutoModelForCausalLM
 from transformers.modeling_utils import PreTrainedModel, GenerationMixin
@@ -86,7 +83,7 @@ class ContextPeftAdaptorBase( ABC ):
         self.bias = getattr( base_layer, 'bias', None )
     
     def base_layer( self, x: torch.Tensor ):
-        return nn.functional.linear( x, self.weight, self.bias )
+        return nn.functional.linear( x, self.weight, self.bias ) # pylint: disable=E1102
 
     @abstractmethod
     def forward( self, x: torch.Tensor, adaptor_mask: dict[str, torch.Tensor] | None = None ):
