@@ -647,7 +647,7 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
             for c in contexts:
                 mask += context_map[c]
 
-            if self.training:
+            if self.training and self.adaptor_dropout_p > 0:
                 drop_mask = torch.rand_like( input_ids, dtype=torch.float ) > self.adaptor_dropout_p
                 mask *= drop_mask
 
