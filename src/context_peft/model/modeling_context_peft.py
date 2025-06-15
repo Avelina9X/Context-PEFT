@@ -106,7 +106,7 @@ class ContextPeftAdaptorBase( ABC ):
 
 class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
     adaptor_layer_names = ( 'lora_A', 'lora_B', 'lora_bias' )
-    other_param_names = ( 'r', 'lora_alpha', 'use_rslora', 'scaling', 'initialization' )
+    other_param_names = ( 'r', 'lora_alpha', 'use_rslora', 'scale_multiplier', 'scaling', 'initialization' )
     module_types = ( nn.Linear, )
 
     def __init__( self, base_layer: nn.Module, configs: dict[str, dict], **kwargs ):
@@ -117,12 +117,13 @@ class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
         self.r = { k: v['r'] for k, v in configs.items() }
         self.lora_alpha = { k: v['lora_alpha'] for k, v in configs.items() }
         self.use_rslora = { k: v['use_rslora'] for k, v in configs.items() }
+        self.scale_multiplier = { k: v['scale_multiplier'] for k, v in configs.items() }
 
         self.initialization = { k: v['initialization'] for k, v in configs.items() }
 
         # Compute and store scaling or rslora scaling parameters
-        scaling = { k: self.lora_alpha[k] / self.r[k] for k in configs }
-        rs_scaling = { k: self.lora_alpha[k] / self.r[k] ** 0.5 for k in configs }
+        scaling = { k: self.scale_multiplier[k] * self.lora_alpha[k] / self.r[k] for k in configs }
+        rs_scaling = { k: self.scale_multiplier[k] * self.lora_alpha[k] / self.r[k] ** 0.5 for k in configs }
         self.scaling = { k: rs_scaling[k] if self.use_rslora[k] else scaling[k] for k in configs }
 
         # Compute if bias is enabled based on bool or 'auto' detection

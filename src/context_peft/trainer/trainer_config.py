@@ -55,6 +55,7 @@ class TrainerConfig:
     adaptor_method: ADAPTOR_METHODS = field( default='connector' )
     adaptor_context: Optional[ADAPTOR_CONTEXTS] = field( default=None )
     lora_rank: Optional[int] = field( default=None )
+    lora_image_scale: Optional[float] = field( default=None )
     adaptor_kwargs: Optional[dict] = field( default=None )
     adaptor_dropout: float = field( default=0.0 )
 

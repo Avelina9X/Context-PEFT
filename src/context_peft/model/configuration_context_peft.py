@@ -60,7 +60,8 @@ def validate_peft_config( config: dict, peft_type: str, adaptor_name: str ):
             'lora_alpha': ( int, ),
             'use_rslora': ( bool, ),
             'use_bias': ( bool, Literal['auto'] ),
-            'initialization': ( str, )
+            'initialization': ( str, ),
+            'scale_multiplier': ( float, )
         },
         'ia3': {
             'context': ( str, list[str] ),

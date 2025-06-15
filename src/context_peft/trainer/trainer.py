@@ -29,7 +29,7 @@ from data import BaseDataset, CocoDataset, compute_f1
 from .trainer_config import TrainerConfig
 from .lr_schedules import SCHEDULE_MAP
 
-def get_adaptors( task: str, context: str | None, num_hidden_layers: int ):
+def get_adaptors( task: str, context: str | None, num_hidden_layers: int, peft_type: str | None, lora_image_scale: float | None ):
     if context is None:
         return None
     
@@ -52,10 +52,13 @@ def get_adaptors( task: str, context: str | None, num_hidden_layers: int ):
                     f'layers.{last}.mlp',
                 ]
             }
+            if peft_type == 'lora':
+                adaptors[ f'{task}:image' ][ 'scale_multiplier' ] = lora_image_scale
+                
         elif c == 'text':
             adaptors[ f'{task}:text' ] = {
                 'context': 'text'
-            }
+            }                
         elif c == 'shared':
             adaptors[ f'{task}:shared' ] = {
                 'context': [ 'text', 'image' ]
@@ -76,6 +79,7 @@ def get_peft_config( peft_type: str | None, adaptor_kwargs: dict | None ):
             'target_modules': [ 'q_proj', 'k_proj', 'v_proj', 'o_proj', 'up_proj', 'gate_proj', 'down_proj' ],
             'exclude_modules': None,
             'use_bias': 'auto',
+            'scale_multiplier': 1.0,
         }
     elif peft_type == 'bitfit':
         config = {
@@ -181,7 +185,9 @@ class Trainer:
         adaptors = get_adaptors(
             self.trainer_config.dataset,
             self.trainer_config.adaptor_context,
-            text_config.num_hidden_layers
+            text_config.num_hidden_layers,
+            self.trainer_config.peft_type,
+            self.trainer_config.lora_image_scale
         )
 
         config = ContextPeftConfig(
@@ -240,7 +246,9 @@ class Trainer:
         adaptors = get_adaptors(
             self.trainer_config.dataset,
             self.trainer_config.adaptor_context,
-            text_config.num_hidden_layers
+            text_config.num_hidden_layers,
+            self.trainer_config.peft_type,
+            self.trainer_config.lora_image_scale,
         )
 
         config = ContextPeftConfig.from_pretrained(
