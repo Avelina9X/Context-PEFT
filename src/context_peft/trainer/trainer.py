@@ -412,7 +412,7 @@ class Trainer:
         
         return self.dataset.train_dataloader(
             num_workers=self.trainer_config.dataset_train_workers,
-            seed_start=ctypes.c_uint32( hash( self.trainer_config.stage ) ).value,
+            seed_start=ctypes.c_uint32( hash( self.trainer_config.stage ) ).value + self.trainer_config.seed_offset,
             **kwargs
         )
 

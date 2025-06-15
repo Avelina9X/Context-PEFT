@@ -63,6 +63,8 @@ class TrainerConfig:
 
     meta: Optional[dict] = field( default=None )
 
+    seed_offset: int = field( default=0 )
+
     def __post_init__( self ):
         self._validate_stage()
         self._validate_batch()
