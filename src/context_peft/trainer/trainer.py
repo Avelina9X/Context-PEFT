@@ -8,6 +8,7 @@ import multiprocessing as mp
 import time
 from typing import Any
 
+import hashlib
 import yaml
 
 import wandb
@@ -28,6 +29,13 @@ from data import BaseDataset, CocoDataset, compute_f1
 
 from .trainer_config import TrainerConfig
 from .lr_schedules import SCHEDULE_MAP
+
+def seed_hash( string: str, offset: int ) -> int:
+    sha1 = hashlib.sha1()
+    sha1.update( str.encode( string ) )
+    sha1_hex = sha1.hexdigest()
+    seed = ( offset + int( sha1_hex, 16 ) ) % 4294967295
+    return seed
 
 def get_adaptors( task: str, context: str | None, num_hidden_layers: int, peft_type: str | None, lora_image_scale: float | None ):
     if context is None:
@@ -412,7 +420,8 @@ class Trainer:
     def get_train_dataloader( self ):
         kwargs = {}
 
-        kwargs[ 'prefetch_factor' ] = 4 * self.accumulation_steps
+        if self.trainer_config.dataset_train_workers > 0:
+            kwargs[ 'prefetch_factor' ] = 4 * self.accumulation_steps
 
         if self.device.type == 'cuda':
             kwargs[ 'pin_memory' ] = True
@@ -420,7 +429,7 @@ class Trainer:
         
         return self.dataset.train_dataloader(
             num_workers=self.trainer_config.dataset_train_workers,
-            seed_start=ctypes.c_uint32( hash( self.trainer_config.stage ) ).value + self.trainer_config.seed_offset,
+            seed_start=seed_hash( self.trainer_config.stage, self.trainer_config.seed_offset ),
             **kwargs
         )
 
