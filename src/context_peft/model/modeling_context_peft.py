@@ -521,9 +521,6 @@ class ContextPeftPreTrainedModel( PreTrainedModel ):
         elif isinstance( module, ContextPeftAdaptorBase ):
             module.init_adaptor_weights()
 
-# Special pre forward hook for adaptor mask injection!
-def _adaptor_mask_pre_forward_hook( target, args, adaptor_mask ):
-    return ( *args, adaptor_mask )
 
 class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, GenerationMixin ):
     def __init__( self, config: ContextPeftConfig, load_from_hub=False, **kwargs ):
