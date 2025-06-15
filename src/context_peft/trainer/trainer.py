@@ -596,14 +596,14 @@ class Trainer:
 
             assert isinstance( out, torch.Tensor )
 
-            pred = out[ :, input_len : ].to( device='cpu', non_blocking=True )
+            pred = out[ :, input_len : ]
 
             pred_batch.append( pred )
             targets_batch.append( targets )
             batch_sizes.append( batch_size )
 
         for pred, targets, batch_size in zip( pred_batch, targets_batch, batch_sizes ):
-            pred_cpu = pred.tolist()
+            pred_cpu = pred.cpu().tolist()
             assert len( pred_cpu ) == len( targets )
             for i in range( batch_size ):
                 pred_list.append( pred_cpu[i] )
