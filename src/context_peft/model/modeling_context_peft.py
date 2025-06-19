@@ -477,21 +477,32 @@ CONTEXT_PEFT_WRAPPER_MAPPING: dict[str, type[ContextPeftWrapperBase]] = {
     'bitfit': ContextPeftWrapperBitFit,
 }
 
+
 class ContextPeftConnector( nn.Module ):
     def __init__( self, in_features: int, out_features: int, connector_activation: str, connector_bias: bool, connector_dropout: float ):
         super().__init__()
-
+        self.norm = nn.LayerNorm( in_features )
         self.in_proj = nn.Linear( in_features, out_features, bias=connector_bias )
         self.out_proj = nn.Linear( out_features, out_features, bias=connector_bias )
         self.act_fn = ACT2FN[connector_activation]
         self.dropout = nn.Dropout( p=connector_dropout )
 
+        self.bos_bias = nn.Parameter( torch.empty( out_features ) )
+        self.eos_bias = nn.Parameter( torch.empty( out_features ) )
+
     def forward( self, x ):
+        x = self.norm( x )
         x = self.in_proj( x )
         x = self.act_fn( x )
         x = self.dropout( x )
         x = self.out_proj( x )
-        return x
+
+        B, S, D = x.shape
+
+        bos = self.eos_bias.to( x.dtype ).expand( B, 1, D )
+        eos = self.bos_bias.to( x.dtype ).expand( B, 1, D )
+        
+        return torch.cat( [ bos, x, eos ], dim=1 )
 
 class ContextPeftPreTrainedModel( PreTrainedModel ):
     config_class = ContextPeftConfig
@@ -517,6 +528,12 @@ class ContextPeftPreTrainedModel( PreTrainedModel ):
                 module.weight.data[module.padding_idx].zero_()
         elif isinstance( module, ContextPeftAdaptorBase ):
             module.init_adaptor_weights()
+        elif isinstance( module, ContextPeftConnector ):
+            module.bos_bias.data.normal_( mean=0, std=std )
+            module.eos_bias.data.normal_( mean=0, std=std )
+        elif isinstance( module, nn.LayerNorm ):
+            module.bias.data.zero_()
+            module.weight.data.fill_( 1.0 )
 
 
 class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, GenerationMixin ):

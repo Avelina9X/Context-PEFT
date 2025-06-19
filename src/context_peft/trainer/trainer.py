@@ -163,6 +163,7 @@ class Trainer:
 
         self._validation_iterator = self.get_validation_dataloader()
         self._evaluation_iterator = self.get_evaluation_dataloader()
+        # self._final_evaluation_iterator = self.get_final_evaluation_dataloader()
         
     def load_pipeline_stage1( self ) -> tuple[ContextPeftProcessor, ContextPeftForConditionalGeneration]:
         vision_model_name = self.trainer_config.vision_model_name
@@ -466,6 +467,24 @@ class Trainer:
             **kwargs
         )
 
+    def get_final_evaluation_dataloader( self ):
+        kwargs = {}
+
+        kwargs[ 'prefetch_factor' ] = 4
+
+        if self.device.type == 'cuda':
+            kwargs[ 'pin_memory' ] = True
+            kwargs[ 'pin_memory_device' ] = 'cuda'
+
+        if self.trainer_config.dataset_validation_worker:
+            kwargs[ 'persistent_workers' ] = True
+        
+        return self.dataset.evaluation_dataloader(
+            worker=self.trainer_config.dataset_validation_worker,
+            batch_size=1,
+            **kwargs
+        )
+
     def _train_forward_pass( self, inputs: BatchFeature, labels: torch.Tensor ):
         with torch.autocast( self.device.type, dtype=torch.bfloat16 ):
             logits: torch.Tensor = self.model( **inputs, return_dict=True, use_cache=False ).logits
@@ -564,7 +583,7 @@ class Trainer:
         return metric_dict
 
     @torch.no_grad
-    def evaluation( self ):
+    def evaluation( self, final=False ):        
         self.model.eval()
 
         f1_metrics = []
@@ -572,7 +591,12 @@ class Trainer:
         recall_metrics = []
 
         iterator = iter( self._evaluation_iterator )
-        # length = len( self.dataset.get_validation_split() )
+
+        # if not final:
+        #     iterator = iter( self._evaluation_iterator )
+        # else:
+        #     del self._evaluation_iterator
+        #     iterator = iter( self._final_evaluation_iterator )
 
         pred_batch = []
         targets_batch = []
@@ -625,11 +649,19 @@ class Trainer:
             precision_metrics.append( precision )
             recall_metrics.append( recall )
 
+
         metric_dict = {
             f'evaluation/{self.trainer_config.dataset}/f1': sum( f1_metrics ) / len( f1_metrics ),
             f'evaluation/{self.trainer_config.dataset}/precision': sum( precision_metrics ) / len( precision_metrics ),
             f'evaluation/{self.trainer_config.dataset}/recall': sum( recall_metrics ) / len( recall_metrics ),
         }
+        
+        # if final:
+        #     metric_dict.update( {
+        #         f'final_evaluation/{self.trainer_config.dataset}/f1': sum( f1_metrics ) / len( f1_metrics ),
+        #         f'final_evaluation/{self.trainer_config.dataset}/precision': sum( precision_metrics ) / len( precision_metrics ),
+        #         f'final_evaluation/{self.trainer_config.dataset}/recall': sum( recall_metrics ) / len( recall_metrics ),
+        #     } )
         
         return metric_dict
 

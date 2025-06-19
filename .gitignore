@@ -188,3 +188,7 @@ configs/stage2_tests
 configs/stage2_sweeps
 checkpoints/
 src/context_peft/gen**.py
+
+old/
+
+configs/stage*/sweep*/

@@ -37,13 +37,14 @@ class PrefetchValidationDataset( dataloader.IterableDataset ):
             yield i
 
 class PrefetchEvaluationDataset( dataloader.IterableDataset ):
-    def __init__( self, dataset: 'BaseDataset' ):
+    def __init__( self, dataset: 'BaseDataset', batch_size: int | None = None ):
         super().__init__()
         self.dataset = dataset
+        self.batch_size = batch_size
 
     def __iter__( self ):
         gc.collect()
-        for i in self.dataset.evaluation_iterator():
+        for i in self.dataset.evaluation_iterator( self.batch_size ):
             yield i
 
 class BaseDataset( ABC ):
@@ -162,7 +163,7 @@ class BaseDataset( ABC ):
         raise NotImplementedError()
 
     @abstractmethod
-    def evaluation_iterator( self ) -> Iterator[tuple[BatchFeature, list[list[str]]]]:
+    def evaluation_iterator( self, batch_size: int | None = None ) -> Iterator[tuple[BatchFeature, list[list[str]]]]:
         """ Creates an iterator over the evaluation split, yielding BatchFeatures and a list of gold target strings.
 
         Yields:
@@ -211,7 +212,7 @@ class BaseDataset( ABC ):
             **kwargs,
         )
 
-    def evaluation_dataloader( self, worker: bool, **kwargs ) -> dataloader.DataLoader:
+    def evaluation_dataloader( self, worker: bool, batch_size: int | None = None, **kwargs ) -> dataloader.DataLoader:
         """ Creates a torch DataLoader with parallel support.
 
         Args:
@@ -221,7 +222,7 @@ class BaseDataset( ABC ):
         Returns:
             dataloader.DataLoader: Initialised DataLoader
         """
-        prefetch_dataset = PrefetchEvaluationDataset( self )
+        prefetch_dataset = PrefetchEvaluationDataset( self, batch_size )
 
         return dataloader.DataLoader(
             prefetch_dataset,

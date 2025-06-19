@@ -131,7 +131,7 @@ class ContextPeftProcessor( ProcessorMixin ):
                 f"The number of images in the text {n_images_in_text} and images {n_images_in_images} should be the same."
             )
 
-        prompt_strings = [ sample.replace( self.image_placeholder_token.content, self.image_pad_token.content * self.image_seq_len ) for sample in text ] # type: ignore
+        prompt_strings = [ sample.replace( self.image_placeholder_token.content, self.image_pad_token.content * ( self.image_seq_len + 2 ) ) for sample in text ] # type: ignore
         text_inputs = self.tokenizer( text=prompt_strings,  **output_kwargs["text_kwargs"] )
         inputs.update(text_inputs)
 

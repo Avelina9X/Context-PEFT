@@ -336,14 +336,14 @@ class CocoDataset( BaseDataset ):
         for row in self.get_validation_split():
             yield self.validation_collate_fn( [ row ] )
 
-    def evaluation_iterator( self ) -> Iterator[tuple[BatchFeature, list[list[str]]]]:
+    def evaluation_iterator( self, batch_size: int | None = None ) -> Iterator[tuple[BatchFeature, list[list[str]]]]:
         rows = []
         for row in self.get_validation_split():
             assert isinstance( row, dict )
 
             rows.append( row )
 
-            if len( rows ) == self.batch_size:
+            if len( rows ) == ( batch_size or self.batch_size ):
                 yield self.evaluation_collate_fn( rows )
                 rows = []
         if rows:
@@ -398,8 +398,8 @@ class CocoDataset( BaseDataset ):
         if image_seq_len is None:
             raise ValueError( 'image_seq_len could not be inferred from processor. Please pass image_seq_len!' )
 
-        # Because length contains a placeholder token we subtract 1 and then add image_seq_len
-        unpadded_sequence_length = longest_example_len - 1 + image_seq_len
+        # Because length contains a placeholder token we subtract 1 and then add image_seq_len and 2 for BOS/EOS
+        unpadded_sequence_length = longest_example_len - 1 + image_seq_len + 2
 
         # Round up to next multiple
         padded_sequence_length = math.ceil( unpadded_sequence_length / pad_to_multiple ) * pad_to_multiple
