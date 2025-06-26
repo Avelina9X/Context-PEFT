@@ -192,3 +192,8 @@ src/context_peft/gen**.py
 old/
 
 configs/stage*/sweep*/
+
+src/context_peft/scratch.py
+
+configs/
+dl/
