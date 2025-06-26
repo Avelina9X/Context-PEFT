@@ -146,6 +146,10 @@ class Trainer:
         self.model = model
         self.device = model.device
 
+        gc.collect()
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+
         self.dataset = self.get_dataset()
         self.training_schedule = self.get_training_schedule()
         self.optimizer = self.get_optimizer()
@@ -226,7 +230,32 @@ class Trainer:
             sep_token_id=text_tokenizer.sep_token_id,
         )
 
-        model = ContextPeftForConditionalGeneration( config, load_from_hub=True )
+        model = ContextPeftForConditionalGeneration(
+            config,
+            load_from_hub=True,
+            device_map='cuda' if torch.cuda.is_available() else 'cpu'
+        )
+
+        if config.text_trainable: # pylint: disable=E1101
+            model.text_model.float()
+
+        if config.vision_trainable: # pylint: disable=E1101
+            model.vision_model.float()
+
+        if config.connector_trainable:
+            model.connector.float()
+
+        if self.trainer_config.trainable_embeddings:
+            model.text_model.get_input_embeddings().requires_grad_( True )
+            model.text_model.get_output_embeddings().requires_grad_( True )
+            model.text_model.get_input_embeddings().float()
+            model.text_model.get_output_embeddings().float()
+        else:
+            model.text_model.get_input_embeddings().requires_grad_( False )
+            model.text_model.get_output_embeddings().requires_grad_( False )
+            model.text_model.get_input_embeddings().bfloat16()
+            model.text_model.get_output_embeddings().bfloat16()
+        
         model.train()
 
         if torch.cuda.is_available():
@@ -281,7 +310,12 @@ class Trainer:
         # model = ContextPeftForConditionalGeneration( config=config, load_from_hub=True )
         # model.connector.load_state_dict( og_model.connector.state_dict() )
 
-        model = ContextPeftForConditionalGeneration.from_pretrained( cpeft_model_path, config=config, torch_dtype='auto' )
+        model = ContextPeftForConditionalGeneration.from_pretrained(
+            cpeft_model_path,
+            config=config,
+            torch_dtype='auto',
+            device_map='cuda' if torch.cuda.is_available() else 'cpu'
+        )
 
         if config.text_trainable: # pylint: disable=E1101
             model.text_model.float()
@@ -289,14 +323,19 @@ class Trainer:
         if config.vision_trainable: # pylint: disable=E1101
             model.vision_model.float()
 
+        if config.connector_trainable: # pylint: disable=E1101
+            model.connector.float()
+
         if self.trainer_config.trainable_embeddings:
             model.text_model.get_input_embeddings().requires_grad_( True )
-            model.text_model.float()
+            model.text_model.get_output_embeddings().requires_grad_( True )
+            model.text_model.get_input_embeddings().float()
+            model.text_model.get_output_embeddings().float()
         else:
             model.text_model.get_input_embeddings().requires_grad_( False )
-
-        # model.text_model.compile()
-        # model.vision_model.compile()
+            model.text_model.get_output_embeddings().requires_grad_( False )
+            model.text_model.get_input_embeddings().bfloat16()
+            model.text_model.get_output_embeddings().bfloat16()
 
         model.train()
 
@@ -559,7 +598,7 @@ class Trainer:
         iterator = iter( self._validation_iterator )
         length = len( self.dataset.get_validation_split() )
 
-        for micro_batch in tqdm.tqdm( iterator, total=length, smoothing=0.0, ncols=80, disable=True ):
+        for micro_batch in tqdm.tqdm( iterator, total=length, smoothing=0.0, ncols=80, disable=self.trainer_config.wandb_mode == 'online' ):
             micro_batch = micro_batch.to( self.device, non_blocking=True )
             labels: torch.Tensor = micro_batch.pop( 'labels' )
             micro_batch.pop( 'attention_mask' )
@@ -608,7 +647,7 @@ class Trainer:
         pad_token_id = self.processor.tokenizer.pad_token_id
         eos_token_id = self.processor.tokenizer.eos_token_id
 
-        for inputs, targets in tqdm.tqdm( iterator, smoothing=0.0, ncols=80, disable=True ):
+        for inputs, targets in tqdm.tqdm( iterator, smoothing=0.0, ncols=80, disable=self.trainer_config.wandb_mode == 'online' ):
             inputs = inputs.to( self.device, non_blocking=True )
 
             batch_size, input_len = inputs.input_ids.shape
