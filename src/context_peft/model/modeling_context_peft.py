@@ -4,7 +4,8 @@ import torch
 import torch.nn as nn
 
 from transformers.models.auto.modeling_auto import AutoModel, AutoModelForCausalLM
-from transformers.modeling_utils import PreTrainedModel, GenerationMixin
+from transformers.modeling_utils import PreTrainedModel
+from transformers.generation.utils import GenerationMixin
 from transformers.activations import ACT2FN
 
 from .configuration_context_peft import ContextPeftConfig
@@ -547,22 +548,31 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
         self.adaptor_map = config.adaptor_map
         self.adaptor_dropout_p = config.adaptor_dropout
 
+        # Module dict for all multi-modal connectors (only text for now)
+        self.connector = nn.ModuleDict( {} )
+        self.connector[ 'image' ] = ContextPeftConnector(
+            config.vision_dim,
+            config.text_dim,
+            config.connector_activation,
+            config.connector_bias,
+            config.connector_dropout,
+        )
+
+        # Set connector trainable
+        self.connector.requires_grad_( config.connector_trainable )
+
         # Not needed, but makes code cleaner
         vision_config = config.vision_config
         text_config = config.text_config
 
-        # Get correct dtype for if we're training either backbone
-        vision_dtype = torch.float32 if config.vision_trainable else vision_config.torch_dtype
-        text_dtype = torch.float32 if config.text_trainable else text_config.torch_dtype
-
         if not load_from_hub:
             # If not loading from hub (e.g. inference or adding extra adaptors)
-            self.vision_model: PreTrainedModel = AutoModel.from_config( vision_config, torch_dtype=vision_dtype, **kwargs ).requires_grad_( config.vision_trainable )
-            self.text_model: PreTrainedModel = AutoModelForCausalLM.from_config( text_config, torch_dtype=text_dtype, **kwargs ).requires_grad_( config.text_trainable)
+            self.vision_model: PreTrainedModel = AutoModel.from_config( vision_config, **kwargs ).requires_grad_( config.vision_trainable )
+            self.text_model: PreTrainedModel = AutoModelForCausalLM.from_config( text_config, **kwargs ).requires_grad_( config.text_trainable)
         else:
             # Load from hub when making new Context-PEFT model
-            self.vision_model: PreTrainedModel = AutoModel.from_pretrained( vision_config._name_or_path, config=vision_config, torch_dtype=vision_dtype, **kwargs ).requires_grad_( config.vision_trainable )
-            self.text_model: PreTrainedModel = AutoModelForCausalLM.from_pretrained( text_config._name_or_path, config=text_config, torch_dtype=text_dtype, **kwargs ).requires_grad_( config.text_trainable )
+            self.vision_model: PreTrainedModel = AutoModel.from_pretrained( vision_config._name_or_path, config=vision_config, torch_dtype='auto', **kwargs ).requires_grad_( config.vision_trainable )
+            self.text_model: PreTrainedModel = AutoModelForCausalLM.from_pretrained( text_config._name_or_path, config=text_config, torch_dtype='auto', **kwargs ).requires_grad_( config.text_trainable )
 
         if config.peft_type is not None:
             # Set flag to enable adaptors
@@ -579,19 +589,6 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
             # No adaptors present, set flag to false
             self.peft_enabled = False
             self.peft_modules = []
-
-        # Module dict for all multi-modal connectors (only text for now)
-        self.connector = nn.ModuleDict( {} )
-        self.connector[ 'image' ] = ContextPeftConnector(
-            config.vision_dim,
-            config.text_dim,
-            config.connector_activation,
-            config.connector_bias,
-            config.connector_dropout,
-        )
-
-        # Set connector trainable
-        self.connector.requires_grad_( config.connector_trainable )
 
         # If the text model has tied weights we must add their keys
         if self.text_model._tied_weights_keys is not None:
