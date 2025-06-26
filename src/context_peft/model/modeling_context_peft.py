@@ -153,41 +153,43 @@ class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
 
         # Get a list of adaptors in this layer
         lora_A_keys = self.lora_A.keys()
+        lora_bias_keys = self.lora_bias.keys()
 
         # Compute the original result and dtype
         result = self.base_layer( x )
-        result_dtype = result.dtype
-        
+
+        # If no adaptors are active return early
+        if not set( lora_A_keys ) & set( adaptor_mask.keys() ):
+            return result
+
+        # Create fused A and B matricies
+        fused_A = torch.cat( [ self.lora_A[name].weight for name in adaptor_mask if name in lora_A_keys ], dim=0 )
+        fused_B = torch.cat( [ self.lora_B[name].weight for name in adaptor_mask if name in lora_A_keys ], dim=1 )
+
+        # Cast input to dtype of A or autocast dtype
+        x = self.cast_input_dtype( x, dtype=fused_A.dtype )
+
+        # Compute fused subspace of adaptors
+        s = torch.nn.functional.linear( x, fused_A ) # type: ignore # pylint: disable=E1102
+
+        # Compute adaptor mask with lora scaling
+        mask = torch.cat( [ m.expand( -1, -1, self.r[name] ) * s.new_tensor( self.scaling[name] ) for name, m in adaptor_mask.items() if name in lora_A_keys ], dim=-1 )
+
+        # Apply adaptor mask and compute output
+        delta = torch.nn.functional.linear( s * mask, fused_B ) # type: ignore # pylint: disable=E1102
+
         # Iterate over all adaptors in the adaptor mask
-        for name, mask in adaptor_mask.items():
+        for name, m in adaptor_mask.items():
             # Check if that adaptor actuall exists
-            if name in lora_A_keys:
-                # Get A, B and scaling
-                lora_A = self.lora_A[name]
-                lora_B = self.lora_B[name]
-                scaling = self.scaling[name]
+            if name in lora_bias_keys:
+                # Apply masked bias
+                delta = delta + self.lora_bias[name].to( dtype=delta.dtype ) * m
 
-                bias = self.lora_bias.get( name, None )
-
-                # Cast input to correct dtype # TODO: autocast logic?
-                x = self.cast_input_dtype( x, dtype=lora_A.weight.dtype )
-                
-                # Compute delta with scaling and masking
-                delta = lora_B( lora_A( x ) )
-                delta = delta * delta.new_tensor( scaling )
-
-                if bias is not None:
-                    delta = delta + bias.to( dtype=delta.dtype )
-                
-                delta = delta * mask
-
-                # Add delta to result, cast back to correct dtype
-                result = result + delta.to( dtype=result_dtype )
-
+        # Reset adaptor mask before we return
         self.adaptor_mask = None
 
         # Return updated result
-        return result
+        return result + delta.to( result.dtype )
 
 class ContextPeftAdaptorIA3( nn.Module, ContextPeftAdaptorBase ):
     adaptor_layer_names = ( 'ia3_l', )
