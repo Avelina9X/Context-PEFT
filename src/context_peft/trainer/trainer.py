@@ -524,7 +524,7 @@ class Trainer:
             **kwargs
         )
 
-    def _train_forward_pass( self, inputs: BatchFeature, labels: torch.Tensor ):
+    def _train_forward_pass( self, inputs: dict, labels: torch.Tensor ):
         with torch.autocast( self.device.type, dtype=torch.bfloat16 ):
             logits: torch.Tensor = self.model( **inputs, return_dict=True, use_cache=False ).logits
 
@@ -553,7 +553,7 @@ class Trainer:
             
         return loss.detach(), acc.detach(), ppl.detach()
 
-    def _validation_forward_pass( self, inputs: BatchFeature, labels: torch.Tensor ):
+    def _validation_forward_pass( self, inputs: dict, labels: torch.Tensor ):
         with torch.autocast( self.device.type, dtype=torch.bfloat16 ):
             logits: torch.Tensor = self.model( **inputs, return_dict=True, use_cache=False ).logits
 
@@ -603,7 +603,7 @@ class Trainer:
             labels: torch.Tensor = micro_batch.pop( 'labels' )
             micro_batch.pop( 'attention_mask' )
 
-            loss, acc, ppl = self.validation_forward_pass( micro_batch, labels )
+            loss, acc, ppl = self.validation_forward_pass( dict( **micro_batch ), labels )
 
             loss_metric.update( loss )
             acc_metric.update( acc )
@@ -727,7 +727,7 @@ class Trainer:
     def get_log_string( self, metric_dict: dict[str, Any] ):
         step = metric_dict[ 'stats/train_step' ]
         epoch = metric_dict[ 'stats/dataset_epoch' ]
-        lr = metric_dict[ 'stats/learning_rate' ]
+        # lr = metric_dict[ 'stats/learning_rate' ]
 
         train_stats = {
             't_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'train/' )
@@ -803,7 +803,7 @@ class Trainer:
                 micro_batch: BatchFeature = next( train_iterator ).to( device=self.device, non_blocking=True )
                 labels: torch.Tensor = micro_batch.pop( 'labels' )
                 micro_batch.pop( 'attention_mask' )
-                loss, acc, ppl = self.train_forward_pass( micro_batch, labels )
+                loss, acc, ppl = self.train_forward_pass( dict( **micro_batch ), labels )
 
                 loss_metric.update( loss )
                 acc_metric.update( acc )
