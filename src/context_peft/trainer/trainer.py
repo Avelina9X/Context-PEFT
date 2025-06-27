@@ -598,7 +598,7 @@ class Trainer:
         iterator = iter( self._validation_iterator )
         length = len( self.dataset.get_validation_split() )
 
-        for micro_batch in tqdm.tqdm( iterator, total=length, smoothing=0.0, ncols=80, disable=self.trainer_config.wandb_mode == 'online' ):
+        for micro_batch in tqdm.tqdm( iterator, total=length, smoothing=0.0, ncols=60, disable=self.trainer_config.wandb_mode == 'online' ):
             micro_batch = micro_batch.to( self.device, non_blocking=True )
             labels: torch.Tensor = micro_batch.pop( 'labels' )
             micro_batch.pop( 'attention_mask' )
@@ -647,7 +647,7 @@ class Trainer:
         pad_token_id = self.processor.tokenizer.pad_token_id
         eos_token_id = self.processor.tokenizer.eos_token_id
 
-        for inputs, targets in tqdm.tqdm( iterator, smoothing=0.0, ncols=80, disable=self.trainer_config.wandb_mode == 'online' ):
+        for inputs, targets in tqdm.tqdm( iterator, smoothing=0.0, ncols=60, disable=self.trainer_config.wandb_mode == 'online' ):
             inputs = inputs.to( self.device, non_blocking=True )
 
             batch_size, input_len = inputs.input_ids.shape
@@ -792,7 +792,7 @@ class Trainer:
             }
         )
 
-        for _ in tqdm.tqdm( range( self.training_schedule.total_training_steps ), smoothing=0.0, ncols=80, disable=True ):            
+        for _ in tqdm.tqdm( range( self.training_schedule.total_training_steps ), smoothing=0.0, ncols=60, disable=self.trainer_config.wandb_mode == 'online' ):            
             self.model.train()
 
             metric_dict = {}
