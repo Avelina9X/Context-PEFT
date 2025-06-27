@@ -538,6 +538,11 @@ class ContextPeftPreTrainedModel( PreTrainedModel ):
             module.bias.data.zero_()
             module.weight.data.fill_( 1.0 )
 
+    @torch.no_grad
+    def initialize_weights( self ):
+        # Ugly hack, but prevents the new smart apply system from breaking composite model inits
+        self.apply( self._initialize_weights )
+
 
 class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, GenerationMixin ):
     def __init__( self, config: ContextPeftConfig, load_from_hub=False, **kwargs ):
