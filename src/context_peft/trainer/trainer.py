@@ -1,3 +1,4 @@
+import logging
 import os
 import gc
 import math
@@ -20,6 +21,7 @@ from torcheval import metrics
 from transformers import CLIPVisionModel, AutoImageProcessor, AutoTokenizer, AutoConfig, BatchFeature
 from transformers.trainer_pt_utils import get_parameter_names
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
+from transformers.cache_utils import StaticCache
 
 from model import ContextPeftConfig, ContextPeftProcessor, ContextPeftForConditionalGeneration
 from model.modeling_context_peft import CONTEXT_PEFT_WRAPPER_MAPPING
@@ -311,12 +313,14 @@ class Trainer:
         # model = ContextPeftForConditionalGeneration( config=config, load_from_hub=True )
         # model.connector.load_state_dict( og_model.connector.state_dict() )
 
+        logging.disable( logging.WARNING )
         model = ContextPeftForConditionalGeneration.from_pretrained(
             cpeft_model_path,
             config=config,
             torch_dtype='auto',
             device_map='cuda' if torch.cuda.is_available() else 'cpu'
         )
+        logging.disable( logging.NOTSET )
 
         if config.text_trainable: # pylint: disable=E1101
             model.text_model.float()
@@ -599,6 +603,8 @@ class Trainer:
         iterator = iter( self._validation_iterator )
         length = len( self.dataset.get_validation_split() )
 
+        start_time = time.time()
+
         for micro_batch in tqdm.tqdm( iterator, total=length, smoothing=0.0, ncols=60, disable=self.trainer_config.wandb_mode == 'online' ):
             micro_batch = micro_batch.to( self.device, non_blocking=True )
             labels: torch.Tensor = micro_batch.pop( 'labels' )
@@ -614,10 +620,13 @@ class Trainer:
         acc = acc_metric.compute().item()
         ppl = ppl_metric.compute().item()
 
+        end_time = time.time()
+
         metric_dict = {
             f'validation/{self.trainer_config.dataset}/loss': loss,
             f'validation/{self.trainer_config.dataset}/acc': acc,
             f'validation/{self.trainer_config.dataset}/ppl': ppl,
+            'stats/val_time': end_time - start_time,
         }
 
         return metric_dict
@@ -647,6 +656,8 @@ class Trainer:
 
         pad_token_id = self.processor.tokenizer.pad_token_id
         eos_token_id = self.processor.tokenizer.eos_token_id
+
+        start_time = time.time()
 
         for inputs, targets in tqdm.tqdm( iterator, smoothing=0.0, ncols=60, disable=self.trainer_config.wandb_mode == 'online' ):
             inputs = inputs.to( self.device, non_blocking=True )
@@ -704,11 +715,13 @@ class Trainer:
             precision_metrics.append( precision )
             recall_metrics.append( recall )
 
+        end_time = time.time()
 
         metric_dict = {
             f'evaluation/{self.trainer_config.dataset}/f1': sum( f1_metrics ) / len( f1_metrics ),
             f'evaluation/{self.trainer_config.dataset}/precision': sum( precision_metrics ) / len( precision_metrics ),
             f'evaluation/{self.trainer_config.dataset}/recall': sum( recall_metrics ) / len( recall_metrics ),
+            'stats/eval_time': end_time - start_time,
         }
         
         # if final:
@@ -842,7 +855,7 @@ class Trainer:
             step_end_time = time.time()
 
             time_delta = step_end_time - step_start_time
-            samplerate = time_delta / self.trainer_config.batch_size
+            samplerate = self.trainer_config.batch_size / time_delta
 
             train_samplerate_metric.update( torch.tensor( samplerate, dtype=torch.float, device=train_samplerate_metric.device ) )
             total_train_metric.update( torch.tensor( time_delta, dtype=torch.float, device=total_train_metric.device ) )
@@ -898,7 +911,6 @@ class Trainer:
                     with open( config_path, 'w', encoding='utf-8' ) as f:
                         yaml.dump( config_dict, f, default_flow_style=False, sort_keys=False )
                     
-                
                 run.finish()
                 break
 
