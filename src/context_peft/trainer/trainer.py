@@ -167,6 +167,7 @@ class Trainer:
 
         self._validation_iterator = self.get_validation_dataloader()
         self._evaluation_iterator = self.get_evaluation_dataloader()
+        self._evaluation_caches: dict[int, StaticCache] = {}
         # self._final_evaluation_iterator = self.get_final_evaluation_dataloader()
         
     def load_pipeline_stage1( self ) -> tuple[ContextPeftProcessor, ContextPeftForConditionalGeneration]:
@@ -654,6 +655,18 @@ class Trainer:
 
             assert batch_size == len( targets )
 
+            if batch_size not in self._evaluation_caches:
+                self._evaluation_caches[batch_size] = StaticCache(
+                    self.model.text_model.config,
+                    max_cache_len=self.dataset.sequence_length,
+                    device=self.model.device,
+                    dtype=torch.bfloat16,
+                    max_batch_size=batch_size,
+                )
+
+            past_key_values = self._evaluation_caches[batch_size]
+            past_key_values.reset()
+
             with torch.autocast( device_type=self.device.type, dtype=torch.bfloat16 ):
                 out = self.model.generate(
                     **inputs,
@@ -662,7 +675,10 @@ class Trainer:
                     max_length=self.dataset.sequence_length,
                     do_sample=False,
                     return_dict_in_generate=False,
-                    skip_unused_adaptors=True
+                    skip_unused_adaptors=False,
+                    past_key_values=past_key_values,
+                    # cache_implementation='static',
+                    # disable_compile=True,
                 )
 
             assert isinstance( out, torch.Tensor )
