@@ -14,7 +14,7 @@ if __name__ == '__main__':
         config = yaml.safe_load( f )
         assert isinstance( config, dict )
 
-    config[ 'micro_batch_size' ] *= args.micro_batch_mult
+    config[ 'micro_batch_size' ] = min( config[ 'batch_size' ], config[ 'micro_batch_size' ] * args.micro_batch_mult )
     
     trainer_config = TrainerConfig(
         **config
