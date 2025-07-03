@@ -8,6 +8,9 @@ from PIL import Image
 import torch
 from datasets import Dataset
 
+from transformers.feature_extraction_utils import BatchFeature
+from transformers.processing_utils import ProcessorMixin
+
 def compute_assistant_mask(
     input_ids: torch.Tensor,
     assistant_prefix: list[int],
@@ -209,3 +212,34 @@ def compute_f1( pred: str, gold: list[str] ):
     
     return best_f1, best_precision, best_recall
 
+def messages_as_batch(
+    messages: list,
+    pad_to: int,
+    processor: ProcessorMixin,
+    assistant_prefix: list[int],
+    assistant_suffix: list[int]
+) -> BatchFeature:
+    batch: BatchFeature = processor.apply_chat_template(
+        messages,
+        tokenize=True,
+        return_tensors='pt',
+        padding='max_length',
+        max_length=pad_to,
+        return_dict=True,
+        truncation=False,
+    ) # type: ignore
+
+    input_ids, labels = compute_assistant_mask( batch.input_ids, assistant_prefix, assistant_suffix )
+
+    inputs = {
+        'input_ids': input_ids,
+        'labels': labels,
+    }
+
+    if 'pixel_values' in batch and batch.pixel_values is not None:
+        inputs[ 'pixel_values' ] = batch.pixel_values
+
+    if 'attention_mask' in batch and batch.attention_mask is not None:
+        inputs[ 'attention_mask' ] = batch.attention_mask[ :, : -1 ]
+
+    return BatchFeature( inputs, tensor_type='pt' )
