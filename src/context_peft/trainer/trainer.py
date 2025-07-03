@@ -31,86 +31,7 @@ from data import BaseDataset, CocoDataset, compute_f1
 from .trainer_config import TrainerConfig
 from .lr_schedules import SCHEDULE_MAP
 
-def seed_hash( string: str, offset: int ) -> int:
-    sha1 = hashlib.sha1()
-    sha1.update( str.encode( string ) )
-    sha1_hex = sha1.hexdigest()
-    seed = ( offset + int( sha1_hex, 16 ) ) % 4294967295
-    return seed
-
-def get_adaptors( task: str, context: str | None, num_hidden_layers: int, peft_type: str | None, lora_image_scale: float | None ):
-    if context is None:
-        return None
-    
-    adaptors = {}
-    contexts = {
-        'image': [ 'image' ],
-        'text': [ 'text' ],
-        'both': [ 'image', 'text' ],
-        'shared': [ 'shared' ]
-    }
-
-    for c in contexts[context]:
-        if c == 'image':
-            last = num_hidden_layers - 1
-            adaptors[ f'{task}:image' ] = {
-                'context': 'image',
-                'exclude_modules': [
-                    f'layers.{last}.self_attn.q_proj',
-                    f'layers.{last}.self_attn.o_proj',
-                    f'layers.{last}.mlp',
-                ]
-            }
-            if peft_type == 'lora':
-                adaptors[ f'{task}:image' ][ 'scale_multiplier' ] = lora_image_scale
-                
-        elif c == 'text':
-            adaptors[ f'{task}:text' ] = {
-                'context': 'text'
-            }                
-        elif c == 'shared':
-            adaptors[ f'{task}:shared' ] = {
-                'context': [ 'text', 'image' ]
-            }
-        else:
-            raise ValueError( f'Invalid context {c}!' )
-
-    return adaptors
-
-def get_peft_config( peft_type: str | None, adaptor_kwargs: dict | None ):
-    adaptor_kwargs = adaptor_kwargs or {}
-
-    if peft_type is None:
-        return None
-    elif peft_type == 'lora':
-        config = {
-            'type': 'lora',
-            'target_modules': [ 'q_proj', 'k_proj', 'v_proj', 'o_proj', 'up_proj', 'gate_proj', 'down_proj' ],
-            'exclude_modules': None,
-            'use_bias': 'auto',
-            'scale_multiplier': 1.0,
-        }
-    elif peft_type == 'bitfit':
-        config = {
-            'type': 'bitfit',
-            'target_modules': [ 'q_proj', 'k_proj', 'v_proj', 'o_proj', 'up_proj', 'gate_proj', 'down_proj' ],
-            'exclude_modules': None,
-            'force_bias': False,
-        }
-    elif peft_type == 'ia3':
-        config = {
-            'type': 'ia3',
-            'target_modules': [ 'k_proj', 'v_proj', 'down_proj' ],
-            'exclude_modules': None,
-            'feedforward_modules': [ 'down_proj' ]
-        }
-    else:
-        raise ValueError( f'Invalid peft type {peft_type}!' )
-
-    config.update( **adaptor_kwargs )
-
-    return config
-
+from .trainer_utils import seed_hash, get_adaptors, get_peft_config
 
 @dataclass
 class TrainingSchedule:
@@ -415,7 +336,9 @@ class Trainer:
         adaptor_parameters: list[str] = []
         base_parameters: list[str] = []
 
-        for name, p in self.model.named_parameters():
+        named_parameters = list( self.model.named_parameters() )
+
+        for name, p in named_parameters:
             if p.requires_grad:
                 if any( exclude in name for exclude in adaptor_layer_names ):
                     adaptor_parameters.append( name )
@@ -432,15 +355,15 @@ class Trainer:
 
         param_groups = [
             {
-                'params': [ p for n, p in self.model.named_parameters() if n in base_decay_parameters ],
+                'params': [ p for n, p in named_parameters if n in base_decay_parameters ],
                 'weight_decay': base_decay,
             },
             {
-                'params': [ p for n, p in self.model.named_parameters() if n in base_nocay_parameters ],
+                'params': [ p for n, p in named_parameters if n in base_nocay_parameters ],
                 'weight_decay': 0,
             },
             {
-                'params': [ p for n, p in self.model.named_parameters() if n in adaptor_parameters ],
+                'params': [ p for n, p in named_parameters if n in adaptor_parameters ],
                 'weight_decay': adaptor_decay,
             },
         ]
@@ -641,12 +564,6 @@ class Trainer:
 
         iterator = iter( self._evaluation_iterator )
 
-        # if not final:
-        #     iterator = iter( self._evaluation_iterator )
-        # else:
-        #     del self._evaluation_iterator
-        #     iterator = iter( self._final_evaluation_iterator )
-
         pred_batch = []
         targets_batch = []
         batch_sizes = []
@@ -688,8 +605,6 @@ class Trainer:
                     return_dict_in_generate=False,
                     skip_unused_adaptors=False,
                     past_key_values=past_key_values,
-                    # cache_implementation='static',
-                    # disable_compile=True,
                 )
 
             assert isinstance( out, torch.Tensor )
@@ -707,9 +622,11 @@ class Trainer:
                 pred_list.append( pred_cpu[i] )
                 targets_list.append( targets[i] )
 
+        table_rows = []
+
         for pred_tokens, targets in zip( pred_list, targets_list ):
             pred = self.processor.tokenizer.decode( pred_tokens, skip_special_tokens=True )
-            # print( pred )
+            table_rows.append( [ pred, targets ] )
             f1, precision, recall = compute_f1( pred, targets )
             f1_metrics.append( f1 )
             precision_metrics.append( precision )
@@ -723,6 +640,14 @@ class Trainer:
             f'evaluation/{self.trainer_config.dataset}/recall': sum( recall_metrics ) / len( recall_metrics ),
             'stats/eval_time': end_time - start_time,
         }
+
+        if final:
+            table = wandb.Table(
+                columns=[ 'pred', 'targets' ],
+                data=table_rows
+            )
+            
+            metric_dict[ f'predictions/{self.trainer_config.dataset}' ] = table
         
         # if final:
         #     metric_dict.update( {
@@ -861,7 +786,7 @@ class Trainer:
             total_train_metric.update( torch.tensor( time_delta, dtype=torch.float, device=total_train_metric.device ) )
 
             if self.train_step % self.training_schedule.evaluation_interval_steps == 0 or self.train_step == self.training_schedule.total_training_steps:
-                metric_dict.update( self.evaluation() )
+                metric_dict.update( self.evaluation( self.train_step == self.training_schedule.total_training_steps ) )
 
             if self.train_step % self.training_schedule.validation_interval_steps == 0 or self.train_step == self.training_schedule.total_training_steps:
                 metric_dict.update( self.validation() )
@@ -903,7 +828,13 @@ class Trainer:
 
                     os.makedirs( output_path, exist_ok=True )
 
-                    self.model.save_pretrained( output_path )
+                    if self.trainer_config.peft_type == 'fullft':
+                        self.model.save_pretrained( output_path )
+                    else:
+                        self.model.config.save_pretrained( output_path )
+                        adaptor_path = os.path.join( output_path, 'adaptors.pt' )
+                        torch.save( self.get_params_to_save(), adaptor_path )
+                        
                     self.processor.save_pretrained( output_path )
 
                     config_dict = dataclasses.asdict( self.trainer_config )
@@ -916,4 +847,22 @@ class Trainer:
 
             
 
-            
+    def get_params_to_save( self ):
+        connector_params = list( self.model.connector.parameters() )
+
+        adaptor_params = []
+
+        for module in self.model.peft_modules:
+            assert isinstance( module, torch.nn.Module )
+            adaptor_params += [ p for n, p in module.named_parameters() if any( s in n for s in module.adaptor_layer_names ) ]
+
+        params_to_save = set( connector_params + adaptor_params )
+        names_to_save = set()
+        
+        for n, p in self.model.named_parameters():
+            if p in params_to_save:
+                names_to_save.add( n )
+
+        state_dict = { n: p for n, p in self.model.state_dict().items() if n in names_to_save }
+
+        return state_dict
