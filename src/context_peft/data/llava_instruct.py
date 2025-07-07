@@ -58,7 +58,7 @@ def _train_collate_fn(
     messages = []
 
     for example in examples:
-        path = os.path.join( coco_train_folder, 'train2017', example[ 'file_name' ] )
+        path = os.path.join( coco_train_folder, 'train2017', example[ 'image' ] )
         image = Image.open( path )
         image.load()
         messages.append( _train_conversation_mapper( example, image ) )
@@ -77,7 +77,8 @@ def _validation_collate_fn(
     messages = []
 
     for example in examples:
-        image = example[ 'image' ].load()
+        image = example[ 'image' ]
+        image.load()
         messages.append( [
             make_multimodal_user_turn_from_images( ( '<image>', '\n' + example[ 'question' ] ), [ image ] ),
             make_multimodal_assistant_turn( example[ 'gpt_answer' ] )
@@ -97,7 +98,8 @@ def _evaluation_collate_fn(
     message_list = []
     caption_list = []
     for example in examples:
-        image = example[ 'image' ].load()
+        image = example[ 'image' ]
+        image.load()
         
         message_list.append( [
             make_multimodal_user_turn_from_images( ( '<image>', '\n' + example[ 'question' ] ), [ image ] ),
