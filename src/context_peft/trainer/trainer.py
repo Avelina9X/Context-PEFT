@@ -634,7 +634,7 @@ class Trainer:
 
         end_time = time.time()
 
-        metric_dict = {
+        metric_dict: dict = {
             f'evaluation/{self.trainer_config.dataset}/f1': sum( f1_metrics ) / len( f1_metrics ),
             f'evaluation/{self.trainer_config.dataset}/precision': sum( precision_metrics ) / len( precision_metrics ),
             f'evaluation/{self.trainer_config.dataset}/recall': sum( recall_metrics ) / len( recall_metrics ),
