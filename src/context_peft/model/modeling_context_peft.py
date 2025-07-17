@@ -551,7 +551,6 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
         # Set local versions because self.config.* can cause graph breaks
         self.image_pad_token_id = config.image_pad_token_id
         self.adaptor_map = config.adaptor_map
-        self.adaptor_dropout_p = config.adaptor_dropout
 
         # Module dict for all multi-modal connectors (only text for now)
         self.connector = nn.ModuleDict( {} )
@@ -648,23 +647,23 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
         adaptor_mask: dict[str, torch.Tensor] = {}
 
         # Map context -> mask
-        context_map = {
+        modality_map = {
             'text': input_ids != self.image_pad_token_id,
             'image': input_ids == self.image_pad_token_id,
         }
 
         # Iterate over all adaptor names
         for adaptor_name, contexts in self.adaptor_map.items():
-            # Create empty mask to accumulate masks into
-            mask = torch.zeros_like( input_ids, dtype=torch.bool )
-
-            # Iterate over adaptor's contexts and update mask
-            for c in contexts:
-                mask += context_map[c]
-
-            if self.training and self.adaptor_dropout_p > 0:
-                drop_mask = torch.rand_like( input_ids, dtype=torch.float ) > self.adaptor_dropout_p
-                mask *= drop_mask
+            if contexts[ 'modalities' ] is not None:
+                # Create empty mask to accumulate masks into
+                mask = torch.zeros_like( input_ids, dtype=torch.bool )
+            
+                # Iterate over adaptor's contexts and update mask
+                for modality in contexts[ 'modalities' ]:
+                    mask += modality_map[ modality ]
+            else:
+                # Create full mask if no modality specified
+                mask = torch.zeros_like( input_ids, dtype=torch.bool )
 
             # Write mask into dict
             adaptor_mask[ adaptor_name ] = mask.unsqueeze( -1 )

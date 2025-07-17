@@ -156,7 +156,6 @@ class Trainer:
             peft_type=self.trainer_config.peft_type,
             default_peft_config=peft_config,
             adaptors=adaptors,
-            adaptor_dropout=self.trainer_config.adaptor_dropout,
 
             attn_implementation='sdpa',
 
@@ -236,7 +235,6 @@ class Trainer:
             peft_type=self.trainer_config.peft_type,
             default_peft_config=peft_config,
             adaptors=adaptors,
-            adaptor_dropout=self.trainer_config.adaptor_dropout,
 
             attn_implementation='sdpa',
         )

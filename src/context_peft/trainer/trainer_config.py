@@ -58,7 +58,6 @@ class TrainerConfig:
     lora_rank: Optional[int] = field( default=None )
     lora_image_scale: Optional[float] = field( default=None )
     adaptor_kwargs: Optional[dict] = field( default=None )
-    adaptor_dropout: float = field( default=0.0 )
 
     train_compile_mode: Optional[COMPILE_MODES] = field( default=None )
     validation_compile_mode: Optional[COMPILE_MODES] = field( default=None )
