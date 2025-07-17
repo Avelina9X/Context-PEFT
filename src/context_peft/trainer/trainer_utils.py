@@ -1,35 +1,5 @@
-import logging
-import os
-import gc
-import math
-import dataclasses
-from dataclasses import dataclass
-import multiprocessing as mp
-import time
-from typing import Any
-
 import hashlib
-import yaml
 
-import wandb
-import tqdm
-
-import torch
-from torch import nn
-from torcheval import metrics
-
-from transformers import CLIPVisionModel, AutoImageProcessor, AutoTokenizer, AutoConfig, BatchFeature
-from transformers.trainer_pt_utils import get_parameter_names
-from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
-from transformers.cache_utils import StaticCache
-
-from model import ContextPeftConfig, ContextPeftProcessor, ContextPeftForConditionalGeneration
-from model.modeling_context_peft import CONTEXT_PEFT_WRAPPER_MAPPING
-
-from data import BaseDataset, CocoDataset, compute_f1
-
-from .trainer_config import TrainerConfig
-from .lr_schedules import SCHEDULE_MAP
 
 def seed_hash( string: str, offset: int ) -> int:
     """ Generates an int32 seed from a string and int.
