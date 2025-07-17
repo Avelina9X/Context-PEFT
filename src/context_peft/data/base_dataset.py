@@ -1,6 +1,8 @@
 import gc
 from collections.abc import Iterator
+from collections import defaultdict
 from abc import ABC, abstractmethod
+import statistics
 
 import torch.utils.data.dataloader as dataloader
 
@@ -84,6 +86,11 @@ class BaseDataset( ABC ):
 
         self.batch_size = batch_size
         self.sequence_length = sequence_length
+
+    @abstractmethod
+    def get_name( self ) -> str:
+        """ Returns the dataset's name """
+        raise NotImplementedError()
     
     @abstractmethod
     def get_train_split( self ) -> Dataset:
@@ -230,6 +237,40 @@ class BaseDataset( ABC ):
             num_workers=1 if worker else 0,
             **kwargs,
         )
+
+    @abstractmethod
+    def compute_score( self, prediction: str, references: list[str], **kwargs ) -> dict[str, float]:
+        """ Compute the score of a single prediction.
+
+        Args:
+            prediction (str): Model prediction.
+            references (list[str]): List of one or more gold references.
+            **kwargs: additional arguments needed to compute the scores.
+
+        Returns:
+            dict[str, float]: single sample metric scores.
+        """
+
+    def compute_scores( self, predictions: list[str], references: list[list[str]], **kwargs ) -> dict[str, float]:
+        """ Computes aggregated scores over a list of predictions.
+
+        Args:
+            predictions (list[str]): List of model predictions.
+            references (list[list[str]]): List of lists of candidate predictions.
+            **kwargs: additional arguments needed to compute the scores.
+
+        Returns:
+            dict[str, float]: aggregated metrics
+        """
+        metrics_dict = defaultdict( list )
+        
+        for pred, refs in zip( predictions, references ):
+            results = self.compute_score( pred, refs, **kwargs )
+
+            for k, v in results.items():
+                metrics_dict[ k ].append( v )
+
+        return { k: statistics.mean( v ) for k, v in metrics_dict.items() }
 
     @abstractmethod
     def set_optimal_sequence_length( self, pad_to_multiple=32, image_seq_len: int | None = None ) -> tuple[int, int]:

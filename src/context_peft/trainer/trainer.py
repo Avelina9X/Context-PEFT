@@ -558,17 +558,14 @@ class Trainer:
     def evaluation( self, final=False ):        
         self.model.eval()
 
-        f1_metrics = []
-        precision_metrics = []
-        recall_metrics = []
-
         iterator = iter( self._evaluation_iterator )
 
         pred_batch = []
         targets_batch = []
         batch_sizes = []
 
-        pred_list = []
+        pred_tok_list = []
+        pred_str_list = []
         targets_list = []
 
         pad_token_id = self.processor.tokenizer.pad_token_id
@@ -619,25 +616,23 @@ class Trainer:
             pred_cpu = pred.cpu().tolist()
             assert len( pred_cpu ) == len( targets )
             for i in range( batch_size ):
-                pred_list.append( pred_cpu[i] )
+                pred_tok_list.append( pred_cpu[i] )
                 targets_list.append( targets[i] )
 
         table_rows = []
 
-        for pred_tokens, targets in zip( pred_list, targets_list ):
+        for pred_tokens, targets in zip( pred_tok_list, targets_list ):
             pred = self.processor.tokenizer.decode( pred_tokens, skip_special_tokens=True )
             table_rows.append( [ pred, targets ] )
-            f1, precision, recall = compute_f1( pred, targets )
-            f1_metrics.append( f1 )
-            precision_metrics.append( precision )
-            recall_metrics.append( recall )
+            pred_str_list.append( pred )
 
         end_time = time.time()
 
         metric_dict: dict = {
-            f'evaluation/{self.trainer_config.dataset}/f1': sum( f1_metrics ) / len( f1_metrics ),
-            f'evaluation/{self.trainer_config.dataset}/precision': sum( precision_metrics ) / len( precision_metrics ),
-            f'evaluation/{self.trainer_config.dataset}/recall': sum( recall_metrics ) / len( recall_metrics ),
+            **{
+                f'evaluation/{self.dataset.get_name()}/{k}': v
+                for k, v in self.dataset.compute_scores( pred_str_list, targets_list ).items()
+            },
             'stats/eval_time': end_time - start_time,
         }
 
@@ -647,22 +642,16 @@ class Trainer:
                 data=table_rows
             )
             
-            metric_dict[ f'predictions/{self.trainer_config.dataset}' ] = table
-        
-        # if final:
-        #     metric_dict.update( {
-        #         f'final_evaluation/{self.trainer_config.dataset}/f1': sum( f1_metrics ) / len( f1_metrics ),
-        #         f'final_evaluation/{self.trainer_config.dataset}/precision': sum( precision_metrics ) / len( precision_metrics ),
-        #         f'final_evaluation/{self.trainer_config.dataset}/recall': sum( recall_metrics ) / len( recall_metrics ),
-        #     } )
+            metric_dict[ f'predictions/{self.dataset.get_name()}' ] = table
+
         
         return metric_dict
 
     def get_train_metric_dict( self, loss: float, acc: float, ppl: float ):
         metric_dict = {
-            f'train/{self.trainer_config.dataset}/loss': loss,
-            f'train/{self.trainer_config.dataset}/acc': acc,
-            f'train/{self.trainer_config.dataset}/ppl': ppl,
+            f'train/{self.dataset.get_name()}/loss': loss,
+            f'train/{self.dataset.get_name()}/acc': acc,
+            f'train/{self.dataset.get_name()}/ppl': ppl,
         }
 
         return metric_dict
@@ -752,7 +741,7 @@ class Trainer:
             metric_dict = {}
 
             step_start_time = time.time()
-            
+
             for _ in range( self.accumulation_steps ):
                 micro_batch: BatchFeature = next( train_iterator ).to( device=self.device, non_blocking=True )
                 labels: torch.Tensor = micro_batch.pop( 'labels' )

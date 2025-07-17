@@ -25,6 +25,7 @@ from datasets import (
 from .base_dataset import BaseDataset
 from .dataset_utils import (
     compute_assistant_mask,
+    compute_f1,
     make_multimodal_assistant_turn,
     make_multimodal_user_turn,
     make_multimodal_user_turn_from_images,
@@ -295,6 +296,9 @@ class CocoDataset( BaseDataset ):
 
         # Set validation split as is
         self.valid_split = dataset[ 'validation' ]
+
+    def get_name( self ) -> str:
+        return 'coco'
     
     def get_train_split( self ) -> Dataset:
         return self.train_split
@@ -348,6 +352,10 @@ class CocoDataset( BaseDataset ):
                 rows = []
         if rows:
             yield self.evaluation_collate_fn( rows )
+
+    def compute_score( self, prediction: str, references: list[str], **kwargs ) -> dict[str, float]:
+        f1, precision, recall = compute_f1( prediction, references )
+        return { 'f1': f1, 'precision': precision, 'recall': recall }
 
     def set_optimal_sequence_length( self, pad_to_multiple=32, image_seq_len: int | None = None ) -> tuple[int, int]:
         # Get the longest prompt (in image placeholder mode)
