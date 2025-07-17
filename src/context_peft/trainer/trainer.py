@@ -435,34 +435,6 @@ class Trainer:
             **kwargs
         )
 
-    def _train_forward_pass( self, inputs: dict, labels: torch.Tensor ):
-        with torch.autocast( self.device.type, dtype=torch.bfloat16 ):
-            logits: torch.Tensor = self.model( **inputs, return_dict=True, use_cache=False ).logits
-
-            B, S, D = logits.shape
-            
-            loss_mask = labels != -100
-
-            acc = ( logits.argmax( -1 ) == labels ).float()
-            acc = ( acc * loss_mask ).sum( -1 ) / loss_mask.sum( -1 )
-            acc = acc.mean()
-
-            loss = torch.nn.functional.cross_entropy(
-                input=logits.reshape( B * S, D ).float(),
-                target=labels.reshape( B * S ),
-                reduction='none',
-                ignore_index=-100
-            ).reshape( B, S )
-
-            loss = ( loss * loss_mask ).sum( -1 ) / loss_mask.sum( -1 )
-            ppl = loss.detach().exp()
-            
-            loss = loss.mean()
-            ppl = ppl.mean()
-
-        ( loss / self.accumulation_steps ).backward()
-            
-        return loss.detach(), acc.detach(), ppl.detach()
 
     def _validation_forward_pass( self, inputs: dict, labels: torch.Tensor ):
         with torch.autocast( self.device.type, dtype=torch.bfloat16 ):
@@ -536,6 +508,7 @@ class Trainer:
         }
 
         return metric_dict
+
 
     def _evaluation_forward_pass( self, dataset: BaseDataset, iterator, log_table=False ):
         pred_batch = []
@@ -627,55 +600,35 @@ class Trainer:
 
         return metric_dict
 
-    def get_train_metric_dict( self, loss: float, acc: float, ppl: float ):
-        metric_dict = {
-            f'train/{self.dataset.get_name()}/loss': loss,
-            f'train/{self.dataset.get_name()}/acc': acc,
-            f'train/{self.dataset.get_name()}/ppl': ppl,
-        }
 
-        return metric_dict
+    def _train_forward_pass( self, inputs: dict, labels: torch.Tensor ):
+        with torch.autocast( self.device.type, dtype=torch.bfloat16 ):
+            logits: torch.Tensor = self.model( **inputs, return_dict=True, use_cache=False ).logits
 
-    def get_stats_metric_dict( self, samplerate_metric: metrics.Metric, total_train_metric: metrics.Metric ):
-        metric_dict = {
-            'stats/train_step': self.train_step,
-            'stats/dataset_epoch': self.train_step * self.trainer_config.batch_size / self.training_schedule.samples_per_epoch,
-            'stats/learning_rate': self.lr_schedule.get_lr( self.train_step ),
-            'stats/samplerate': samplerate_metric.compute().item(),
-            'stats/train_time': total_train_metric.compute().item(),
-        }
+            B, S, D = logits.shape
+            
+            loss_mask = labels != -100
 
-        return metric_dict
+            acc = ( logits.argmax( -1 ) == labels ).float()
+            acc = ( acc * loss_mask ).sum( -1 ) / loss_mask.sum( -1 )
+            acc = acc.mean()
 
-    def get_log_string( self, metric_dict: dict[str, Any] ):
-        step = metric_dict[ 'stats/train_step' ]
-        epoch = metric_dict[ 'stats/dataset_epoch' ]
-        # lr = metric_dict[ 'stats/learning_rate' ]
+            loss = torch.nn.functional.cross_entropy(
+                input=logits.reshape( B * S, D ).float(),
+                target=labels.reshape( B * S ),
+                reduction='none',
+                ignore_index=-100
+            ).reshape( B, S )
 
-        train_stats = {
-            't_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'train/' )
-        }
+            loss = ( loss * loss_mask ).sum( -1 ) / loss_mask.sum( -1 )
+            ppl = loss.detach().exp()
+            
+            loss = loss.mean()
+            ppl = ppl.mean()
 
-        valid_stats = {
-            'v_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'validation/' )
-        }
-
-        eval_stats = {
-            'e_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'evaluation/' )
-        }
-
-        all_metrics_dict = {
-            **train_stats,
-            **valid_stats,
-            **eval_stats,
-        }
-
-        all_metrics_list = [ f'{k}={v:.3f}' for k, v in all_metrics_dict.items() ]
-
-        all_metrics_string = ' '.join( all_metrics_list )
-
-        return f'step={step} | {epoch:.2f} | {all_metrics_string}'
-        
+        ( loss / self.accumulation_steps ).backward()
+            
+        return loss.detach(), acc.detach(), ppl.detach()
 
     def train( self ):
         gc.collect()
@@ -814,6 +767,55 @@ class Trainer:
                 run.finish()
                 break
 
+
+    def get_train_metric_dict( self, loss: float, acc: float, ppl: float ):
+        metric_dict = {
+            f'train/{self.dataset.get_name()}/loss': loss,
+            f'train/{self.dataset.get_name()}/acc': acc,
+            f'train/{self.dataset.get_name()}/ppl': ppl,
+        }
+
+        return metric_dict
+
+    def get_stats_metric_dict( self, samplerate_metric: metrics.Metric, total_train_metric: metrics.Metric ):
+        metric_dict = {
+            'stats/train_step': self.train_step,
+            'stats/dataset_epoch': self.train_step * self.trainer_config.batch_size / self.training_schedule.samples_per_epoch,
+            'stats/learning_rate': self.lr_schedule.get_lr( self.train_step ),
+            'stats/samplerate': samplerate_metric.compute().item(),
+            'stats/train_time': total_train_metric.compute().item(),
+        }
+
+        return metric_dict
+
+    def get_log_string( self, metric_dict: dict[str, Any] ):
+        step = metric_dict[ 'stats/train_step' ]
+        epoch = metric_dict[ 'stats/dataset_epoch' ]
+        # lr = metric_dict[ 'stats/learning_rate' ]
+
+        train_stats = {
+            't_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'train/' )
+        }
+
+        valid_stats = {
+            'v_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'validation/' )
+        }
+
+        eval_stats = {
+            'e_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'evaluation/' )
+        }
+
+        all_metrics_dict = {
+            **train_stats,
+            **valid_stats,
+            **eval_stats,
+        }
+
+        all_metrics_list = [ f'{k}={v:.3f}' for k, v in all_metrics_dict.items() ]
+
+        all_metrics_string = ' '.join( all_metrics_list )
+
+        return f'step={step} | {epoch:.2f} | {all_metrics_string}'
             
 
     def get_params_to_save( self ):
