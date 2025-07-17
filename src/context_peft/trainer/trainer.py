@@ -26,7 +26,7 @@ from transformers.cache_utils import StaticCache
 from model import ContextPeftConfig, ContextPeftProcessor, ContextPeftForConditionalGeneration
 from model.modeling_context_peft import CONTEXT_PEFT_WRAPPER_MAPPING
 
-from data import BaseDataset, CocoDataset, compute_f1
+from data import BaseDataset, CocoDataset, LlavaInstructDataset
 
 from .trainer_config import TrainerConfig
 from .lr_schedules import SCHEDULE_MAP
@@ -42,6 +42,8 @@ class TrainingSchedule:
 
 class Trainer:
     def __init__( self, trainer_config: TrainerConfig ):
+        self.trainer_config = trainer_config
+        
         mp.set_start_method( 'spawn' )
 
         torch.backends.cuda.matmul.allow_tf32 = True # type: ignore # pylint: disable=W0212
@@ -54,8 +56,6 @@ class Trainer:
                 graph_breaks=True,
                 recompiles=True,
             )
-        
-        self.trainer_config = trainer_config
 
         if trainer_config.stage == 'stage1':
             processor, model = self.load_pipeline_stage1()
@@ -73,14 +73,15 @@ class Trainer:
         if self.device.type == 'cuda':
             torch.cuda.empty_cache()
 
-        self.dataset = self.get_dataset()
-        self.evaluation_datasets: list[BaseDataset] = []
+        self.dataset = self.get_dataset( self.trainer_config.dataset )
+        self.evaluation_datasets = [ self.get_dataset( d ) for d in self.trainer_config.evaluation_datasets ]
+        
         self.training_schedule = self.get_training_schedule()
         self.optimizer = self.get_optimizer()
         self.lr_schedule = self.get_lr_schedule()
 
         self.accumulation_steps = trainer_config.batch_size // trainer_config.micro_batch_size
-        self.train_step = 0
+        self.training_step = 0
 
         self.train_forward_pass = (
             torch.compile( self._train_forward_pass, mode=trainer_config.train_compile_mode, dynamic=False )
@@ -89,10 +90,20 @@ class Trainer:
         )
         self.validation_forward_pass = None
 
+        self._train_iterator = self.get_train_dataloader()
         self._validation_iterator = self.get_validation_dataloader()
         self._evaluation_iterator = self.get_evaluation_dataloader( self.dataset )
         self._evaluation_caches: dict[int, StaticCache] = {}
-        # self._final_evaluation_iterator = self.get_final_evaluation_dataloader()
+
+        self.loss_metric = metrics.Mean().to( self.device )
+        self.acc_metric = metrics.Mean().to( self.device )
+        self.ppl_metric = metrics.Mean().to( self.device )
+
+        self.train_samplerate_metric = metrics.Mean()
+        self.total_train_metric = metrics.Sum()
+
+        self.grad_norm_max = metrics.Max().to( self.device )
+        self.grad_norm_avg = metrics.Mean().to( self.device )
         
     def load_pipeline_stage1( self ) -> tuple[ContextPeftProcessor, ContextPeftForConditionalGeneration]:
         vision_model_name = self.trainer_config.vision_model_name
@@ -273,18 +284,23 @@ class Trainer:
         return processor, model
         
         
-    def get_dataset( self ) -> BaseDataset:
-        if self.trainer_config.dataset == 'coco':
-            dataset = CocoDataset(
-                processor=self.processor,
-                assistant_prefix='<|im_start|>assistant\n',
-                assistant_suffix='<|im_end|>',
-                batch_size=self.trainer_config.micro_batch_size,
-                sequence_length=self.trainer_config.sequence_length,
-                download_timeout=4 * 60 * 60,
-            )
+    def get_dataset( self, dataset_name: str ) -> BaseDataset:
+        args = {
+            'processor': self.processor,
+            'assistant_prefix': '<|im_start|>assistant\n',
+            'assistant_suffix': '<|im_end|>',
+            'batch_size': self.trainer_config.micro_batch_size,
+            'sequence_length': self.trainer_config.sequence_length,
+        }
+        
+        if dataset_name == 'coco':
+            dataset = CocoDataset( **args, download_timeout=4 * 60 * 60 )
+        elif dataset_name == 'llava150k':
+            dataset = LlavaInstructDataset( **args, download_timeout=4 * 60 * 60 )
         else:
-            raise ValueError( f'Invalid dataset {self.trainer_config.dataset}' )
+            raise ValueError( f'Invalid dataset {dataset_name}' )
+
+        assert dataset_name == dataset.get_name()
 
         if self.trainer_config.sequence_length == -1:
             upad, pad = dataset.set_optimal_sequence_length( self.trainer_config.pad_to_multiple )
@@ -404,13 +420,12 @@ class Trainer:
     def get_validation_dataloader( self ):
         kwargs = {}
 
-        kwargs[ 'prefetch_factor' ] = 4
-
         if self.device.type == 'cuda':
             kwargs[ 'pin_memory' ] = True
             kwargs[ 'pin_memory_device' ] = 'cuda'
 
         if self.trainer_config.dataset_validation_worker:
+            kwargs[ 'prefetch_factor' ] = 4
             kwargs[ 'persistent_workers' ] = True
         
         return self.dataset.validation_dataloader(
@@ -421,13 +436,12 @@ class Trainer:
     def get_evaluation_dataloader( self, dataset: BaseDataset ):
         kwargs = {}
 
-        kwargs[ 'prefetch_factor' ] = 4
-
         if self.device.type == 'cuda':
             kwargs[ 'pin_memory' ] = True
             kwargs[ 'pin_memory_device' ] = 'cuda'
 
         if self.trainer_config.dataset_validation_worker:
+            kwargs[ 'prefetch_factor' ] = 4
             kwargs[ 'persistent_workers' ] = True
         
         return dataset.evaluation_dataloader(
@@ -581,7 +595,7 @@ class Trainer:
         return metric_dict
 
     @torch.no_grad
-    def evaluation( self, final=False ):        
+    def evaluation( self, final=False ):
         self.model.eval()
         iterator = iter( self._evaluation_iterator )
 
@@ -630,116 +644,78 @@ class Trainer:
             
         return loss.detach(), acc.detach(), ppl.detach()
 
+    def _train_step( self, train_iterator ):
+        self.model.train()
+        
+        step_start_time = time.time()
+
+        for _ in range( self.accumulation_steps ):
+            micro_batch: BatchFeature = next( train_iterator ).to( device=self.device, non_blocking=True )
+            labels: torch.Tensor = micro_batch.pop( 'labels' )
+            micro_batch.pop( 'attention_mask' )
+            loss, acc, ppl = self.train_forward_pass( dict( **micro_batch ), labels )
+
+            self.loss_metric.update( loss )
+            self.acc_metric.update( acc )
+            self.ppl_metric.update( ppl )
+                
+        self.training_step += 1
+
+        for p_group in self.optimizer.param_groups:
+            p_group[ 'lr' ] = self.lr_schedule.get_lr( self.training_step )
+
+        total_grad = torch.nn.utils.clip_grad_norm_( self.model.parameters(), self.trainer_config.max_grad_norm )
+        self.optimizer.step()
+        self.optimizer.zero_grad()
+
+        self.grad_norm_max.update( total_grad )
+        self.grad_norm_avg.update( total_grad )
+
+        step_end_time = time.time()
+
+        time_delta = step_end_time - step_start_time
+        samplerate = self.trainer_config.batch_size / time_delta
+
+        self.train_samplerate_metric.update( torch.tensor( samplerate, dtype=torch.float ) )
+        self.total_train_metric.update( torch.tensor( time_delta, dtype=torch.float ) )
+
     def train( self ):
         gc.collect()
         if self.device.type == 'cuda':
             torch.cuda.empty_cache()
         
-        train_iterator = iter( self.get_train_dataloader() )
+        train_iterator = iter( self._train_iterator )
 
-        loss_metric = metrics.Mean().to( self.device )
-        acc_metric = metrics.Mean().to( self.device )
-        ppl_metric = metrics.Mean().to( self.device )
+        run = self.init_wandb()
 
-        train_samplerate_metric = metrics.Mean()
-        total_train_metric = metrics.Sum()
-
-        grad_norm_max = metrics.Max().to( self.device )
-        grad_norm_avg = metrics.Mean().to( self.device )
-
-        wandb.login( key=os.environ[ 'WANDB_API_KEY' ] )
-
-        total_params = self.model.num_parameters( only_trainable=False )
-        trainable_params = self.model.num_parameters( only_trainable=True )
-
-        run = wandb.init(
-            project=os.environ[ 'WANDB_PROJECT_NAME' ],
-            mode=self.trainer_config.wandb_mode,
-            name=self.trainer_config.run_name,
-            group=self.trainer_config.wandb_group,
-            tags=self.trainer_config.wandb_tags,
-            config={
-                'trainer_config': dataclasses.asdict( self.trainer_config ),
-                'model_config': self.model.config.to_dict(),
-                'params': {
-                    'total': total_params,
-                    'trainable': trainable_params,
-                }
-            }
-        )
-
-        for _ in tqdm.tqdm( range( self.training_schedule.total_training_steps ), smoothing=0.0, ncols=60, disable=self.trainer_config.wandb_mode == 'online' ):            
-            self.model.train()
-
+        for _ in tqdm.tqdm(
+            range( self.training_schedule.total_training_steps ),
+            smoothing=0.0,
+            ncols=60,
+            disable=self.trainer_config.wandb_mode == 'online'
+        ):            
             metric_dict = {}
 
-            step_start_time = time.time()
+            self._train_step( train_iterator )
 
-            for _ in range( self.accumulation_steps ):
-                micro_batch: BatchFeature = next( train_iterator ).to( device=self.device, non_blocking=True )
-                labels: torch.Tensor = micro_batch.pop( 'labels' )
-                micro_batch.pop( 'attention_mask' )
-                loss, acc, ppl = self.train_forward_pass( dict( **micro_batch ), labels )
+            final_step = self.training_step == self.training_schedule.total_training_steps
 
-                loss_metric.update( loss )
-                acc_metric.update( acc )
-                ppl_metric.update( ppl )
-                
-                # print( f'{loss_metric.compute().item():.2f}, {acc_metric.compute().item():.2f}, {ppl_metric.compute().item():.2f}' )
-                    
-            self.train_step += 1
+            if self.training_step % self.training_schedule.evaluation_interval_steps == 0 or final_step:
+                metric_dict.update( self.evaluation( final_step ) )
 
-            for p_group in self.optimizer.param_groups:
-                p_group[ 'lr' ] = self.lr_schedule.get_lr( self.train_step )
-
-            total_grad = torch.nn.utils.clip_grad_norm_( self.model.parameters(), self.trainer_config.max_grad_norm )
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-
-            grad_norm_max.update( total_grad )
-            grad_norm_avg.update( total_grad )
-
-            step_end_time = time.time()
-
-            time_delta = step_end_time - step_start_time
-            samplerate = self.trainer_config.batch_size / time_delta
-
-            train_samplerate_metric.update( torch.tensor( samplerate, dtype=torch.float, device=train_samplerate_metric.device ) )
-            total_train_metric.update( torch.tensor( time_delta, dtype=torch.float, device=total_train_metric.device ) )
-
-            if self.train_step % self.training_schedule.evaluation_interval_steps == 0 or self.train_step == self.training_schedule.total_training_steps:
-                metric_dict.update( self.evaluation( self.train_step == self.training_schedule.total_training_steps ) )
-
-            if self.train_step % self.training_schedule.validation_interval_steps == 0 or self.train_step == self.training_schedule.total_training_steps:
+            if self.training_step % self.training_schedule.validation_interval_steps == 0 or final_step:
                 metric_dict.update( self.validation() )
 
-            if self.train_step % self.trainer_config.logging_steps == 0 or self.train_step == self.training_schedule.total_training_steps:
-                train_dict = self.get_train_metric_dict(
-                    loss=loss_metric.compute().item(),
-                    acc=acc_metric.compute().item(),
-                    ppl=ppl_metric.compute().item(),
-                )
-
-                metric_dict.update( train_dict )
-                
-                loss_metric.reset()
-                acc_metric.reset()
-                ppl_metric.reset()
-
-                metric_dict.update( self.get_stats_metric_dict( samplerate_metric=train_samplerate_metric, total_train_metric=total_train_metric ) )
-                metric_dict.update( {
-                    'grads/max_norm': grad_norm_max.compute().item(),
-                    'grads/avg_norm': grad_norm_avg.compute().item(),
-                } )
-
-                grad_norm_max.reset()
-                grad_norm_avg.reset()
+            if self.training_step % self.trainer_config.logging_steps == 0 or final_step:
+                metric_dict.update( self.get_train_metric_dict() )
+                metric_dict.update( self.get_stats_metric_dict() )
+                metric_dict.update( self.get_grads_metric_dict() )
                 
                 print( self.get_log_string( metric_dict ), flush=True )
 
                 run.log( metric_dict )
 
-            if self.train_step == self.training_schedule.total_training_steps:
+            if final_step:
                 print( 'Done!' )
 
                 if self.trainer_config.output_dir is not None:
@@ -767,31 +743,69 @@ class Trainer:
                 run.finish()
                 break
 
+    def init_wandb( self ):
+        wandb.login( key=os.environ[ 'WANDB_API_KEY' ] )
 
-    def get_train_metric_dict( self, loss: float, acc: float, ppl: float ):
+        total_params = self.model.num_parameters( only_trainable=False )
+        trainable_params = self.model.num_parameters( only_trainable=True )
+
+        run = wandb.init(
+            project=os.environ[ 'WANDB_PROJECT_NAME' ],
+            mode=self.trainer_config.wandb_mode,
+            name=self.trainer_config.run_name,
+            group=self.trainer_config.wandb_group,
+            tags=self.trainer_config.wandb_tags,
+            config={
+                'trainer_config': dataclasses.asdict( self.trainer_config ),
+                'model_config': self.model.config.to_dict(),
+                'params': {
+                    'total': total_params,
+                    'trainable': trainable_params,
+                }
+            }
+        )
+
+        return run
+
+
+    def get_train_metric_dict( self ):
         metric_dict = {
-            f'train/{self.dataset.get_name()}/loss': loss,
-            f'train/{self.dataset.get_name()}/acc': acc,
-            f'train/{self.dataset.get_name()}/ppl': ppl,
+            f'train/{self.dataset.get_name()}/loss': self.loss_metric.compute().item(),
+            f'train/{self.dataset.get_name()}/acc': self.acc_metric.compute().item(),
+            f'train/{self.dataset.get_name()}/ppl': self.ppl_metric.compute().item(),
+        }
+
+        self.loss_metric.reset()
+        self.acc_metric.reset()
+        self.ppl_metric.reset()
+
+        return metric_dict
+
+    def get_stats_metric_dict( self ):
+        metric_dict = {
+            'stats/train_step': self.training_step,
+            'stats/dataset_epoch': self.training_step * self.trainer_config.batch_size / self.training_schedule.samples_per_epoch,
+            'stats/learning_rate': self.lr_schedule.get_lr( self.training_step ),
+            'stats/samplerate': self.train_samplerate_metric.compute().item(), # do NOT reset
+            'stats/train_time': self.total_train_metric.compute().item(), # do NOT reset
         }
 
         return metric_dict
 
-    def get_stats_metric_dict( self, samplerate_metric: metrics.Metric, total_train_metric: metrics.Metric ):
+    def get_grads_metric_dict( self ):
         metric_dict = {
-            'stats/train_step': self.train_step,
-            'stats/dataset_epoch': self.train_step * self.trainer_config.batch_size / self.training_schedule.samples_per_epoch,
-            'stats/learning_rate': self.lr_schedule.get_lr( self.train_step ),
-            'stats/samplerate': samplerate_metric.compute().item(),
-            'stats/train_time': total_train_metric.compute().item(),
+            'grads/max_norm': self.grad_norm_max.compute().item(),
+            'grads/avg_norm': self.grad_norm_avg.compute().item(),
         }
+
+        self.grad_norm_max.reset()
+        self.grad_norm_avg.reset()
 
         return metric_dict
 
     def get_log_string( self, metric_dict: dict[str, Any] ):
         step = metric_dict[ 'stats/train_step' ]
         epoch = metric_dict[ 'stats/dataset_epoch' ]
-        # lr = metric_dict[ 'stats/learning_rate' ]
 
         train_stats = {
             't_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'train/' )
@@ -805,14 +819,8 @@ class Trainer:
             'e_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'evaluation/' )
         }
 
-        all_metrics_dict = {
-            **train_stats,
-            **valid_stats,
-            **eval_stats,
-        }
-
+        all_metrics_dict = { **train_stats, **valid_stats, **eval_stats }
         all_metrics_list = [ f'{k}={v:.3f}' for k, v in all_metrics_dict.items() ]
-
         all_metrics_string = ' '.join( all_metrics_list )
 
         return f'step={step} | {epoch:.2f} | {all_metrics_string}'

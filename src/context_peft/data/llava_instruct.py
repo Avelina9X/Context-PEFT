@@ -24,6 +24,7 @@ from datasets import (
 
 from .base_dataset import BaseDataset
 from .dataset_utils import (
+    compute_f1,
     messages_as_batch,
     make_multimodal_assistant_turn,
     make_multimodal_user_turn,
@@ -169,6 +170,9 @@ class LlavaInstructDataset( BaseDataset ):
         assert isinstance( valid_dataset, DatasetDict )
         self.valid_split = valid_dataset[ 'train' ] # Yes, the validation split is marked as train
 
+    def get_name( self ) -> str:
+        return 'llava150k'
+
     def get_train_split( self ) -> Dataset:
         return self.train_split
     
@@ -216,6 +220,10 @@ class LlavaInstructDataset( BaseDataset ):
                 rows = []
         if rows:
             yield self.evaluation_collate_fn( rows )
+
+    def compute_score( self, prediction: str, references: list[str], **kwargs ) -> dict[str, float]:
+        f1, precision, recall = compute_f1( prediction, references )
+        return { 'f1': f1, 'precision': precision, 'recall': recall }
 
     def set_optimal_sequence_length( self, pad_to_multiple=32, image_seq_len: int | None = None ) -> tuple[int, int]:
         longest_example_len = 0

@@ -24,7 +24,8 @@ class TrainerConfig:
     batch_size: int = field( default=32 )
     micro_batch_size: int = field( default=-1 )
 
-    dataset: Literal['coco'] = field( default='coco' )
+    dataset: str = field( default='coco' )
+    evaluation_datasets: list[str] = field( default_factory=list )
     sequence_length: int = field( default=-1 )
     pad_to_multiple: int = field( default=32 )
     dataset_train_workers: int = field( default=1 )
