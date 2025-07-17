@@ -74,6 +74,7 @@ class Trainer:
             torch.cuda.empty_cache()
 
         self.dataset = self.get_dataset()
+        self.evaluation_datasets: list[BaseDataset] = []
         self.training_schedule = self.get_training_schedule()
         self.optimizer = self.get_optimizer()
         self.lr_schedule = self.get_lr_schedule()
@@ -89,7 +90,7 @@ class Trainer:
         self.validation_forward_pass = None
 
         self._validation_iterator = self.get_validation_dataloader()
-        self._evaluation_iterator = self.get_evaluation_dataloader()
+        self._evaluation_iterator = self.get_evaluation_dataloader( self.dataset )
         self._evaluation_caches: dict[int, StaticCache] = {}
         # self._final_evaluation_iterator = self.get_final_evaluation_dataloader()
         
@@ -417,7 +418,7 @@ class Trainer:
             **kwargs
         )
 
-    def get_evaluation_dataloader( self ):
+    def get_evaluation_dataloader( self, dataset: BaseDataset ):
         kwargs = {}
 
         kwargs[ 'prefetch_factor' ] = 4
@@ -429,26 +430,8 @@ class Trainer:
         if self.trainer_config.dataset_validation_worker:
             kwargs[ 'persistent_workers' ] = True
         
-        return self.dataset.evaluation_dataloader(
+        return dataset.evaluation_dataloader(
             worker=self.trainer_config.dataset_validation_worker,
-            **kwargs
-        )
-
-    def get_final_evaluation_dataloader( self ):
-        kwargs = {}
-
-        kwargs[ 'prefetch_factor' ] = 4
-
-        if self.device.type == 'cuda':
-            kwargs[ 'pin_memory' ] = True
-            kwargs[ 'pin_memory_device' ] = 'cuda'
-
-        if self.trainer_config.dataset_validation_worker:
-            kwargs[ 'persistent_workers' ] = True
-        
-        return self.dataset.evaluation_dataloader(
-            worker=self.trainer_config.dataset_validation_worker,
-            batch_size=1,
             **kwargs
         )
 
@@ -546,32 +529,21 @@ class Trainer:
         end_time = time.time()
 
         metric_dict = {
-            f'validation/{self.trainer_config.dataset}/loss': loss,
-            f'validation/{self.trainer_config.dataset}/acc': acc,
-            f'validation/{self.trainer_config.dataset}/ppl': ppl,
+            f'validation/{self.dataset.get_name()}/loss': loss,
+            f'validation/{self.dataset.get_name()}/acc': acc,
+            f'validation/{self.dataset.get_name()}/ppl': ppl,
             'stats/val_time': end_time - start_time,
         }
 
         return metric_dict
 
-    @torch.no_grad
-    def evaluation( self, final=False ):        
-        self.model.eval()
-
-        iterator = iter( self._evaluation_iterator )
-
+    def _evaluation_forward_pass( self, dataset: BaseDataset, iterator, log_table=False ):
         pred_batch = []
         targets_batch = []
         batch_sizes = []
 
-        pred_tok_list = []
-        pred_str_list = []
-        targets_list = []
-
         pad_token_id = self.processor.tokenizer.pad_token_id
         eos_token_id = self.processor.tokenizer.eos_token_id
-
-        start_time = time.time()
 
         for inputs, targets in tqdm.tqdm( iterator, smoothing=0.0, ncols=60, disable=self.trainer_config.wandb_mode == 'online' ):
             inputs = inputs.to( self.device, non_blocking=True )
@@ -583,7 +555,7 @@ class Trainer:
             if batch_size not in self._evaluation_caches:
                 self._evaluation_caches[batch_size] = StaticCache(
                     self.model.text_model.config,
-                    max_cache_len=self.dataset.sequence_length,
+                    max_cache_len=dataset.sequence_length,
                     device=self.model.device,
                     dtype=torch.bfloat16,
                     max_batch_size=batch_size,
@@ -597,7 +569,7 @@ class Trainer:
                     **inputs,
                     pad_token_id=pad_token_id,
                     eos_token_id=eos_token_id,
-                    max_length=self.dataset.sequence_length,
+                    max_length=dataset.sequence_length,
                     do_sample=False,
                     return_dict_in_generate=False,
                     skip_unused_adaptors=False,
@@ -612,39 +584,47 @@ class Trainer:
             targets_batch.append( targets )
             batch_sizes.append( batch_size )
 
+        table_rows: list[tuple[str,list[str]]] = []
+        
         for pred, targets, batch_size in zip( pred_batch, targets_batch, batch_sizes ):
             pred_cpu = pred.cpu().tolist()
             assert len( pred_cpu ) == len( targets )
             for i in range( batch_size ):
-                pred_tok_list.append( pred_cpu[i] )
-                targets_list.append( targets[i] )
+                pred_str: str = self.processor.tokenizer.decode( pred_cpu[i], skip_special_tokens=True )
+                targets_list: list[str] = targets[i]
+                table_rows.append( ( pred_str, targets_list ) )
 
-        table_rows = []
+        raw_scores = dataset.compute_scores(
+            [ x[0] for x in table_rows ],
+            [ x[1] for x in table_rows ]
+        )
+        
+        metric_dict: dict = { f'evaluation/{dataset.get_name()}/{k}': v for k, v in raw_scores.items() }
 
-        for pred_tokens, targets in zip( pred_tok_list, targets_list ):
-            pred = self.processor.tokenizer.decode( pred_tokens, skip_special_tokens=True )
-            table_rows.append( [ pred, targets ] )
-            pred_str_list.append( pred )
-
-        end_time = time.time()
-
-        metric_dict: dict = {
-            **{
-                f'evaluation/{self.dataset.get_name()}/{k}': v
-                for k, v in self.dataset.compute_scores( pred_str_list, targets_list ).items()
-            },
-            'stats/eval_time': end_time - start_time,
-        }
-
-        if final:
-            table = wandb.Table(
-                columns=[ 'pred', 'targets' ],
-                data=table_rows
-            )
-            
+        if log_table:
+            table = wandb.Table( columns=[ 'pred', 'targets' ], data=table_rows )
             metric_dict[ f'predictions/{self.dataset.get_name()}' ] = table
 
+        return metric_dict
+
+    @torch.no_grad
+    def evaluation( self, final=False ):        
+        self.model.eval()
+        iterator = iter( self._evaluation_iterator )
+
+        start_time = time.time()
+        metric_dict = self._evaluation_forward_pass( self.dataset, iterator, log_table=final )
+        end_time = time.time()
+
+        metric_dict[ 'stats/eval_time' ] = end_time - start_time
         
+        if final:
+            for dataset in self.evaluation_datasets:
+                iterator = iter( self.get_evaluation_dataloader( dataset ) )
+                metric_dict.update(
+                    **self._evaluation_forward_pass( dataset, iterator, log_table=False )
+                )
+
         return metric_dict
 
     def get_train_metric_dict( self, loss: float, acc: float, ppl: float ):
