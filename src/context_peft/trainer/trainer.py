@@ -26,7 +26,7 @@ from transformers.cache_utils import StaticCache
 from model import ContextPeftConfig, ContextPeftProcessor, ContextPeftForConditionalGeneration
 from model.modeling_context_peft import CONTEXT_PEFT_WRAPPER_MAPPING
 
-from data import BaseDataset, CocoDataset, LlavaInstructDataset
+from data import BaseDataset, CocoDataset, LlavaInstructDataset, GQADataset, VQADataset
 
 from .trainer_config import TrainerConfig
 from .lr_schedules import SCHEDULE_MAP
@@ -297,6 +297,10 @@ class Trainer:
             dataset = CocoDataset( **args, download_timeout=4 * 60 * 60 )
         elif dataset_name == 'llava150k':
             dataset = LlavaInstructDataset( **args, download_timeout=4 * 60 * 60 )
+        elif dataset_name == 'gqa':
+            dataset = GQADataset( **args )
+        elif dataset_name == 'vqav2':
+            dataset = VQADataset( **args, download_timeout=4 * 60 * 60 )
         else:
             raise ValueError( f'Invalid dataset {dataset_name}' )
 
