@@ -106,6 +106,8 @@ class Trainer:
 
         self.grad_norm_max = metrics.Max().to( self.device )
         self.grad_norm_avg = metrics.Mean().to( self.device )
+
+        
         
     def load_pipeline_stage1( self ) -> tuple[ContextPeftProcessor, ContextPeftForConditionalGeneration, set[str]]:
         vision_model_name = self.trainer_config.vision_model_name
@@ -701,6 +703,7 @@ class Trainer:
         gc.collect()
         if self.device.type == 'cuda':
             torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
         
         train_iterator = iter( self._train_iterator )
 
@@ -803,6 +806,10 @@ class Trainer:
             'stats/samplerate': self.train_samplerate_metric.compute().item(), # do NOT reset
             'stats/train_time': self.total_train_metric.compute().item(), # do NOT reset
         }
+
+        if self.device.type == 'cuda':
+            metric_dict[ 'stats/vram_usage' ] = torch.cuda.max_memory_allocated()
+            torch.cuda.reset_peak_memory_stats()
 
         return metric_dict
 
