@@ -18,6 +18,7 @@ import torch
 from torch import nn
 from torcheval import metrics
 
+import safetensors.torch
 from transformers import CLIPVisionModel, AutoImageProcessor, AutoTokenizer, AutoConfig, BatchFeature
 from transformers.trainer_pt_utils import get_parameter_names
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
@@ -58,9 +59,9 @@ class Trainer:
             )
 
         if trainer_config.stage == 'stage1':
-            processor, model = self.load_pipeline_stage1()
+            processor, model, dirty_parameters = self.load_pipeline_stage1()
         elif trainer_config.stage == 'stage2':
-            processor, model = self.load_pipeline_stage2()
+            processor, model, dirty_parameters = self.load_pipeline_stage2()
         else:
             raise ValueError( f'Stage {trainer_config.stage} not yet implemented!' )
         
@@ -68,6 +69,7 @@ class Trainer:
         self.processor = processor
         self.model = model
         self.device = model.device
+        self.dirty_parameters = dirty_parameters
 
         gc.collect()
         if self.device.type == 'cuda':
@@ -105,7 +107,7 @@ class Trainer:
         self.grad_norm_max = metrics.Max().to( self.device )
         self.grad_norm_avg = metrics.Mean().to( self.device )
         
-    def load_pipeline_stage1( self ) -> tuple[ContextPeftProcessor, ContextPeftForConditionalGeneration]:
+    def load_pipeline_stage1( self ) -> tuple[ContextPeftProcessor, ContextPeftForConditionalGeneration, set[str]]:
         vision_model_name = self.trainer_config.vision_model_name
         text_model_name = self.trainer_config.text_model_name
         assert vision_model_name is not None
@@ -193,13 +195,18 @@ class Trainer:
         
         model.train()
 
+        dirty_parameters: set[str] = set()
+        for n, p in model.named_parameters():
+            if p.requires_grad:
+                dirty_parameters.add( n )
+
         if torch.cuda.is_available():
             model.cuda() # type: ignore
             torch.backends.cuda.enable_math_sdp( False )
 
-        return processor, model
+        return processor, model, dirty_parameters
 
-    def load_pipeline_stage2( self ) -> tuple[ContextPeftProcessor, ContextPeftForConditionalGeneration]:
+    def load_pipeline_stage2( self ) -> tuple[ContextPeftProcessor, ContextPeftForConditionalGeneration, set[str]]:
         cpeft_model_path = self.trainer_config.cpeft_model_path
         assert cpeft_model_path is not None
 
@@ -239,19 +246,24 @@ class Trainer:
             attn_implementation='sdpa',
         )
 
-        # og_model = ContextPeftForConditionalGeneration.from_pretrained( cpeft_model_path )
+        assert isinstance( config, ContextPeftConfig )
 
-        # model = ContextPeftForConditionalGeneration( config=config, load_from_hub=True )
-        # model.connector.load_state_dict( og_model.connector.state_dict() )
-
-        logging.disable( logging.WARNING )
-        model = ContextPeftForConditionalGeneration.from_pretrained(
-            cpeft_model_path,
+        model = ContextPeftForConditionalGeneration(
             config=config,
-            torch_dtype='auto',
+            load_from_hub=True,
             device_map='cuda' if torch.cuda.is_available() else 'cpu'
         )
-        logging.disable( logging.NOTSET )
+        
+        adaptor_path = os.path.join( cpeft_model_path, 'adaptors.safetensors' )
+        state_dict = safetensors.torch.load_file(
+            adaptor_path,
+            device='cuda' if torch.cuda.is_available() else 'cpu'
+        )
+
+        dirty_parameters: set[str] = set( state_dict.keys() )
+
+        incompatible_keys = model.load_state_dict( state_dict, strict=False )
+        assert( len( incompatible_keys.unexpected_keys ) == 0 )
 
         if config.text_trainable: # pylint: disable=E1101
             model.text_model.float()
@@ -275,11 +287,15 @@ class Trainer:
 
         model.train()
 
+        for n, p in model.named_parameters():
+            if p.requires_grad:
+                dirty_parameters.add( n )
+
         if torch.cuda.is_available():
             model.cuda() # type: ignore
             torch.backends.cuda.enable_math_sdp( False )
 
-        return processor, model
+        return processor, model, dirty_parameters
         
         
     def get_dataset( self, dataset_name: str ) -> BaseDataset:
@@ -728,12 +744,8 @@ class Trainer:
 
                     os.makedirs( output_path, exist_ok=True )
 
-                    if self.trainer_config.peft_type == 'fullft':
-                        self.model.save_pretrained( output_path )
-                    else:
-                        self.model.config.save_pretrained( output_path )
-                        adaptor_path = os.path.join( output_path, 'adaptors.pt' )
-                        torch.save( self.get_params_to_save(), adaptor_path )
+                    adaptor_path = os.path.join( output_path, 'adaptors.safetensors' )
+                    safetensors.torch.save_file( self.get_params_to_save(), adaptor_path )
                         
                     self.processor.save_pretrained( output_path )
 
@@ -829,21 +841,4 @@ class Trainer:
             
 
     def get_params_to_save( self ):
-        connector_params = list( self.model.connector.parameters() )
-
-        adaptor_params = []
-
-        for module in self.model.peft_modules:
-            assert isinstance( module, torch.nn.Module )
-            adaptor_params += [ p for n, p in module.named_parameters() if any( s in n for s in module.adaptor_layer_names ) ]
-
-        params_to_save = set( connector_params + adaptor_params )
-        names_to_save = set()
-        
-        for n, p in self.model.named_parameters():
-            if p in params_to_save:
-                names_to_save.add( n )
-
-        state_dict = { n: p for n, p in self.model.state_dict().items() if n in names_to_save }
-
-        return state_dict
+        return { n: p for n, p in self.model.state_dict().items() if n in self.dirty_parameters }
