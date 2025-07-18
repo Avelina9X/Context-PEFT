@@ -456,7 +456,7 @@ class Trainer:
         )
 
 
-    def _validation_forward_pass( self, inputs: dict, labels: torch.Tensor ):
+    def _validation_forward_pass( self, inputs: dict, labels: torch.Tensor, group_average=True ):
         with torch.autocast( self.device.type, dtype=torch.bfloat16 ):
             logits: torch.Tensor = self.model( **inputs, return_dict=True, use_cache=False ).logits
 
@@ -465,8 +465,7 @@ class Trainer:
             loss_mask = labels != -100
 
             acc = ( logits.argmax( -1 ) == labels ).float()
-            acc = ( acc * loss_mask ).sum( -1 ) / loss_mask.sum( -1 )
-            acc = acc.mean()
+            acc = ( acc * loss_mask ).sum( -1 ) / loss_mask.sum( -1 )             
 
             loss = torch.nn.functional.cross_entropy(
                 input=logits.reshape( B * S, D ).float(),
@@ -477,9 +476,11 @@ class Trainer:
 
             loss = ( loss * loss_mask ).sum( -1 ) / loss_mask.sum( -1 )
             ppl = loss.exp()
-            
-            loss = loss.mean()
-            ppl = ppl.mean()
+
+            if group_average:
+                acc = acc.mean()
+                loss = loss.mean()
+                ppl = ppl.mean()
             
         return loss, acc, ppl
 
