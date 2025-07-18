@@ -725,13 +725,15 @@ class Trainer:
             if final_step:
                 print( 'Done!' )
 
-                if self.trainer_config.output_dir is not None:
+                if self.trainer_config.output_dir is not None and self.trainer_config.wandb_mode != 'disabled':
                     output_dir = self.trainer_config.output_dir.format( **os.environ )
                     output_path = os.path.join( output_dir, self.trainer_config.run_name )
 
                     config_path = os.path.join( output_path, 'trainer_config.yaml' )
 
                     os.makedirs( output_path, exist_ok=True )
+
+                    self.model.config.save_pretrained( output_path )
 
                     adaptor_path = os.path.join( output_path, 'adaptors.safetensors' )
                     safetensors.torch.save_file( self.get_params_to_save(), adaptor_path )
