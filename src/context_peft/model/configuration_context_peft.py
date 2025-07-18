@@ -36,6 +36,7 @@ class ContextPeftConfig( PretrainedConfig ):
         default_peft_config: dict | None = None,
         adaptors: dict | None = None,
         active_adaptors: list | None = None,
+        adaptor_dropout: float | dict[str, float] | None = None,
 
         additional_adaptors: dict | None = None,
         additional_active_adaptors: list | None = None,
@@ -125,6 +126,22 @@ class ContextPeftConfig( PretrainedConfig ):
         if peft_type is None and default_peft_config:
             raise ValueError( 'Cannot set a default peft config when peft_type is None!' )
 
+        if peft_type is not None:
+            if adaptor_dropout is None:
+                adaptor_dropout = 0.0
+
+            if isinstance( adaptor_dropout, float ):
+                adaptor_dropout = { k: adaptor_dropout if k in self.active_adaptors else 0.0 for k in self.all_adaptors }
+            elif isinstance( adaptor_dropout, dict ):
+                adaptor_dropout = { k: adaptor_dropout[k] if k in adaptor_dropout else 0.0 for k in self.all_adaptors }
+            else:
+                raise ValueError( 'adaptor_dropout has unknown type!' )
+        else:
+            if adaptor_dropout is not None:
+                raise ValueError( 'adaptor_dropout must be None when peft_type is None!')
+
+        self.adaptor_dropout = adaptor_dropout
+            
         super().__init__( **kwargs )
 
     @classmethod
@@ -136,6 +153,7 @@ class ContextPeftConfig( PretrainedConfig ):
             'active_adaptors',
             'additional_adaptors',
             'additional_active_adaptors',
+            'adaptor_dropout'
         ]
         
         for key in graft_kwargs:

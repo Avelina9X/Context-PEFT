@@ -2,7 +2,6 @@ from dataclasses import dataclass, field
 from typing import Optional, Literal, TypeAlias, get_args
 
 ADAPTOR_METHODS: TypeAlias = Literal['connector', 'fullft', 'lora', 'bitfit', 'ia3']
-ADAPTOR_CONTEXTS: TypeAlias = Literal['image', 'text', 'both', 'shared']
 COMPILE_MODES: TypeAlias = Literal['default', 'reduce-overhead', 'max-autotune', 'max-autotune-no-cudagraphs']
 
 @dataclass
@@ -48,16 +47,17 @@ class TrainerConfig:
     adam_eps: float = field( default=1e-8 )
     max_grad_norm: float = field( default=1.0 )
 
-    trainable_embeddings: Optional[bool] = field( default=None )
+    trainable_embeddings: Optional[bool] = field( default=False )
 
     connector_dropout: float = field( default=0.0 )
     connector_bias: bool = field( default=False )
 
     adaptor_method: ADAPTOR_METHODS = field( default='connector' )
-    adaptor_context: Optional[ADAPTOR_CONTEXTS] = field( default=None )
-    lora_rank: Optional[int] = field( default=None )
-    lora_image_scale: Optional[float] = field( default=None )
-    adaptor_kwargs: Optional[dict] = field( default=None )
+    adaptor_defaults: Optional[dict] = field( default=None )
+    adaptor_additions: Optional[dict] = field( default=None )
+    adaptor_dropout: Optional[float | dict[str, float]] = field( default=None )
+
+    trainable_adaptors: Optional[list[str] | bool] = field( default=None )
 
     train_compile_mode: Optional[COMPILE_MODES] = field( default=None )
     validation_compile_mode: Optional[COMPILE_MODES] = field( default=None )
@@ -100,44 +100,27 @@ class TrainerConfig:
         # Ensure adaptor_method and adaptor_context are valid options
         if self.adaptor_method not in get_args( ADAPTOR_METHODS ):
             raise ValueError( f'Invalid adaptor_method {self.adaptor_method}' )
-        if self.adaptor_context is not None and self.adaptor_context not in get_args( ADAPTOR_CONTEXTS ):
-            raise ValueError( f'Invalid adaptor_context {self.adaptor_context}' )
 
         # Create new peft_type and text_trainable flags
         self.peft_type = None if self.adaptor_method in [ 'connector', 'fullft' ] else self.adaptor_method
         self.text_trainable = self.adaptor_method == 'fullft'
 
         # Ensure adaptor_context is set iff adaptor_method is a PEFT type
-        if self.peft_type is None and self.adaptor_context is not None:
-            raise ValueError( f'Adaptor method {self.adaptor_method} requires adaptor_context=None' )
-        if self.peft_type is not None and self.adaptor_context is None:
-            raise ValueError( f'Adaptor method {self.adaptor_method} requires adaptor_context to be set!' )
+        if self.peft_type is None and self.adaptor_defaults is not None:
+            raise ValueError( f'Adaptor method {self.adaptor_method} requires adaptor_defaults=None' )
+        if self.peft_type is None and self.adaptor_additions is not None:
+            raise ValueError( f'Adaptor method {self.adaptor_method} requires adaptor_additions=None' )
+        if self.peft_type is None and self.adaptor_dropout is not None:
+            raise ValueError( f'Adaptor method {self.adaptor_method} requires adaptor_dropout=None' )
 
         # Ensure adaptor_decay not set if adaptor_method is not a PEFT type
         if self.peft_type is None and self.adaptor_decay is not False:
             raise ValueError( 'adaptor_decay must be False when no adaptors are active!' )
 
-        # Ensure lora_rank is set iff adaptor_method is lora
-        if self.adaptor_method == 'lora' and self.lora_rank is None and self.adaptor_kwargs is None:
-            raise ValueError( 'Adaptor method lora requires lora_rank or adaptor_kwargs to be set!' )
-        if self.adaptor_method != 'lora' and self.lora_rank is not None:
-            raise ValueError( f'Cannot set lora_rank for adaptor method {self.adaptor_method}!' )
-        if self.adaptor_method in [ 'connector', 'fullft' ] and self.adaptor_kwargs is not None:
-            raise ValueError( f'Cannot set adaptor_kwargs for adaptor method {self.adaptor_method}!' )
-
-        if self.lora_rank is not None and self.adaptor_kwargs is not None:
-            raise ValueError( f'Cannot set both lora_rank and adaptor_kwargs!' )
-
-        if self.lora_rank is not None:
-            self.lora_rank = None
-            self.adaptor_kwargs = {
-                'r': self.lora_rank,
-                'lora_alpha': self.lora_rank,
-                'use_rslora': False,
-            }
-
-        if self.adaptor_kwargs is not None and self.adaptor_method == 'lora' and 'initialization' not in self.adaptor_kwargs:
-            self.adaptor_kwargs[ 'initialization' ] = 'kaiming_uniform'
-
         if self.trainable_embeddings is None:
             self.trainable_embeddings = self.text_trainable
+
+        if self.peft_type is None and self.trainable_adaptors is not None:
+            raise ValueError( f'Cannot set any trainable adaptors with adaptor method {self.adaptor_method}' )
+        if self.peft_type is not None and self.trainable_adaptors is None:
+            self.trainable_adaptors = True

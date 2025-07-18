@@ -129,19 +129,6 @@ class Trainer:
             chat_template='chat_ml'
         )
 
-        peft_config = get_peft_config(
-            self.trainer_config.peft_type,
-            self.trainer_config.adaptor_kwargs
-        )
-
-        adaptors = get_adaptors(
-            self.trainer_config.dataset,
-            self.trainer_config.adaptor_context,
-            text_config.num_hidden_layers,
-            self.trainer_config.peft_type,
-            self.trainer_config.lora_image_scale
-        )
-
         config = ContextPeftConfig(
             vision_config=vision_config,
             vision_dim=vision_config.hidden_size,
@@ -158,8 +145,9 @@ class Trainer:
             connector_bias=self.trainer_config.connector_bias,
 
             peft_type=self.trainer_config.peft_type,
-            default_peft_config=peft_config,
-            adaptors=adaptors,
+            default_peft_config=self.trainer_config.adaptor_defaults,
+            adaptors=self.trainer_config.adaptor_additions,
+            adaptor_dropout=self.trainer_config.adaptor_dropout,
 
             attn_implementation='sdpa',
 
@@ -194,6 +182,9 @@ class Trainer:
             model.text_model.get_output_embeddings().requires_grad_( False )
             model.text_model.get_input_embeddings().bfloat16()
             model.text_model.get_output_embeddings().bfloat16()
+
+        if self.trainer_config.trainable_adaptors is not None:
+            model.set_adaptors_trainable( self.trainer_config.trainable_adaptors )
         
         model.train()
 
@@ -219,18 +210,11 @@ class Trainer:
 
         text_config = ContextPeftConfig.from_pretrained( cpeft_model_path ).get_text_config()
 
-        peft_config = get_peft_config(
-            self.trainer_config.peft_type,
-            self.trainer_config.adaptor_kwargs,
-        )
-
-        adaptors = get_adaptors(
-            self.trainer_config.dataset,
-            self.trainer_config.adaptor_context,
-            text_config.num_hidden_layers,
-            self.trainer_config.peft_type,
-            self.trainer_config.lora_image_scale,
-        )
+        config_kwargs = {}
+        if self.trainer_config.adaptor_defaults is not None:
+            config_kwargs[ 'default_peft_config' ] = self.trainer_config.adaptor_defaults
+        if self.trainer_config.adaptor_additions is not None:
+            config_kwargs[ 'additional_adaptors' ] = self.trainer_config.adaptor_additions
 
         config = ContextPeftConfig.from_pretrained(
             cpeft_model_path,
@@ -242,8 +226,7 @@ class Trainer:
             connector_bias=self.trainer_config.connector_bias,
 
             peft_type=self.trainer_config.peft_type,
-            default_peft_config=peft_config,
-            adaptors=adaptors,
+            **config_kwargs,
 
             attn_implementation='sdpa',
         )
@@ -286,6 +269,9 @@ class Trainer:
             model.text_model.get_output_embeddings().requires_grad_( False )
             model.text_model.get_input_embeddings().bfloat16()
             model.text_model.get_output_embeddings().bfloat16()
+
+        if self.trainer_config.trainable_adaptors is not None:
+            model.set_adaptors_trainable( self.trainer_config.trainable_adaptors )
 
         model.train()
 

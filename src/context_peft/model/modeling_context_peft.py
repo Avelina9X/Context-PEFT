@@ -10,6 +10,13 @@ from transformers.activations import ACT2FN
 
 from .configuration_context_peft import ContextPeftConfig
 
+def cast_input_dtype( x: torch.Tensor, dtype: torch.dtype ):
+    if torch.is_autocast_enabled( x.device.type ):
+        dtype = torch.get_autocast_dtype( x.device.type )
+
+    if x.dtype == dtype:
+        return x
+    return x.to( dtype=dtype )
 
 class ContextPeftAdaptorBase( ABC ):
     # All names of layers that may contain adapter (trainable) weights
@@ -60,14 +67,6 @@ class ContextPeftAdaptorBase( ABC ):
                     layer.requires_grad_( True )
                 else:
                     layer.requires_grad_( False )
-
-    def cast_input_dtype( self, x: torch.Tensor, dtype: torch.dtype ):
-        if torch.is_autocast_enabled( x.device.type ):
-            dtype = torch.get_autocast_dtype( x.device.type )
-
-        if x.dtype == dtype:
-            return x
-        return x.to( dtype=dtype )
 
     # pylint: disable=unused-argument
     def __init__( self, base_layer: nn.Module, configs: dict[str, dict], **kwargs ):
@@ -168,13 +167,13 @@ class ContextPeftAdaptorLora( nn.Module, ContextPeftAdaptorBase ):
         fused_B = torch.cat( [ self.lora_B[name].weight for name in adaptor_mask if name in lora_A_keys ], dim=1 )
 
         # Cast input to dtype of A or autocast dtype
-        x = self.cast_input_dtype( x, dtype=fused_A.dtype )
+        x = cast_input_dtype( x, dtype=fused_A.dtype )
 
         # Compute fused subspace of adaptors
         s = torch.nn.functional.linear( x, fused_A ) # type: ignore # pylint: disable=E1102
 
         # Compute adaptor mask with lora scaling
-        mask = torch.cat( [ m.expand( -1, -1, self.r[name] ) * s.new_tensor( self.scaling[name] ) for name, m in adaptor_mask.items() if name in lora_A_keys ], dim=-1 )
+        mask = torch.cat( [ m.to( s.dtype ).expand( -1, -1, self.r[name] ) * s.new_tensor( self.scaling[name] ) for name, m in adaptor_mask.items() if name in lora_A_keys ], dim=-1 )
 
         # Apply adaptor mask and compute output
         delta = torch.nn.functional.linear( s * mask, fused_B ) # type: ignore # pylint: disable=E1102
@@ -220,17 +219,17 @@ class ContextPeftAdaptorIA3( nn.Module, ContextPeftAdaptorBase ):
         ia3_l_keys = self.ia3_l.keys()
 
         # Create accumulator for IA3 gates
-        ia3_scaling = 1
+        ia3_scaling = x.new_tensor( 1.0 )
 
         # Iterate over all adaptors in the adaptor mask
         for name, mask in adaptor_mask.items():
             # Check if that adaptor actuall exists
             if name in ia3_l_keys:
                 # Get gate
-                ia3_l = self.ia3_l[name] + 1
+                ia3_l = self.ia3_l[name].to( ia3_scaling.dtype ) * mask.to( ia3_scaling.dtype ) + 1
 
                 # Update scaling gate based on mask
-                ia3_scaling = torch.where( mask, ia3_l * ia3_scaling, ia3_scaling )
+                ia3_scaling = ia3_l * ia3_scaling
 
         if self.is_feedforward:
             # If feedforward apply gate to input
@@ -284,7 +283,7 @@ class ContextPeftAdaptorBitFit( nn.Module, ContextPeftAdaptorBase ):
                 bias = self.bitfit_bias[name].to( dtype=result_dtype )
 
                 # Compute delta with scaling and masking
-                delta = bias * mask
+                delta = bias * mask.to( dtype=result_dtype )
 
                 # Add delta to result, cast back to correct dtype
                 result = result + delta
@@ -589,10 +588,14 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
             self.set_adaptors_trainable( True )
 
             self.peft_modules = [ module for module in self.text_model.modules() if isinstance( module, ContextPeftAdaptorBase ) ]
+
+            assert config.adaptor_dropout is not None
+            self.adaptor_dropout = config.adaptor_dropout
         else:
             # No adaptors present, set flag to false
             self.peft_enabled = False
             self.peft_modules = []
+            self.adaptor_dropout: dict[str, float] = {}
 
         # If the text model has tied weights we must add their keys
         if self.text_model._tied_weights_keys is not None:
@@ -646,27 +649,39 @@ class ContextPeftForConditionalGeneration( ContextPeftPreTrainedModel, Generatio
         # Dict which maps adaptor name -> mask
         adaptor_mask: dict[str, torch.Tensor] = {}
 
-        # Map context -> mask
-        modality_map = {
+        # Map modality -> mask
+        modality_map: dict[str, torch.Tensor] = {
             'text': input_ids != self.image_pad_token_id,
             'image': input_ids == self.image_pad_token_id,
         }
 
+        # TODO: add message support
+        messages_map: dict[str, torch.Tensor] = {}
+
         # Iterate over all adaptor names
         for adaptor_name, contexts in self.adaptor_map.items():
             if contexts[ 'modalities' ] is not None:
-                # Create empty mask to accumulate masks into
-                mask = torch.zeros_like( input_ids, dtype=torch.bool )
-            
                 # Iterate over adaptor's contexts and update mask
+                mod_mask = torch.zeros_like( input_ids, dtype=torch.bool )
                 for modality in contexts[ 'modalities' ]:
-                    mask += modality_map[ modality ]
+                    mod_mask += modality_map[ modality ]
             else:
                 # Create full mask if no modality specified
-                mask = torch.zeros_like( input_ids, dtype=torch.bool )
+                mod_mask = torch.ones_like( input_ids, dtype=torch.bool )
 
-            # Write mask into dict
-            adaptor_mask[ adaptor_name ] = mask.unsqueeze( -1 )
+            if contexts[ 'messages' ] is not None:
+                # Iterate over adaptor's contexts and update mask
+                msg_mask = torch.zeros_like( input_ids, dtype=torch.bool )
+                for message in contexts[ 'messages' ]:
+                    msg_mask += messages_map[ message ]
+            else:
+                # Create full mask if no message types specified
+                msg_mask = torch.ones_like( input_ids, dtype=torch.bool )
+
+            # Combine masks, cast to float, and apply dropout
+            mask = cast_input_dtype( mod_mask * msg_mask, torch.float ).unsqueeze( -1 )
+            mask = torch.dropout_( mask, self.adaptor_dropout[ adaptor_name ], self.training )
+            adaptor_mask[ adaptor_name ] = mask
 
         # During inference we may want to skip unused adaptors
         if skip_unused_adaptors:
