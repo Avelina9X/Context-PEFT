@@ -351,14 +351,12 @@ class Trainer:
                 raise ValueError( 'percentile_clipping not supported for torch AdamW' )
             return torch.optim.AdamW( **args )
         elif optimizer in [ 'adamw_32bit', 'adamw_8bit', 'paged_adamw_32bit', 'paged_adamw_8bit' ]:
-            if pc is None:
-                raise ValueError( 'percentile_clipping required for BnB optimizers' )
             return {
                 'adamw_32bit': bnb.optim.AdamW32bit,
                 'adamw_8bit': bnb.optim.AdamW8bit,
                 'paged_adamw_32bit': bnb.optim.PagedAdamW32bit,
                 'paged_adamw_8bit': bnb.optim.PagedAdamW8bit
-            }[ optimizer ]( **args, percentile_clipping=pc )
+            }[ optimizer ]( **args, percentile_clipping=pc or 100 )
         else:
             raise ValueError( f'Unknown optimizer {self.trainer_config.optimizer}' )
 
