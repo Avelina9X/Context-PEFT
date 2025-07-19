@@ -14,6 +14,7 @@ import yaml
 import wandb
 import tqdm
 
+import bitsandbytes as bnb
 import torch
 from torch import nn
 from torcheval import metrics
@@ -335,14 +336,31 @@ class Trainer:
         )
 
     def get_optimizer( self ) -> torch.optim.Optimizer:
-        optimizer = torch.optim.AdamW(
-            params=self.get_param_groups(),
-            lr=0.0,
-            betas=( self.trainer_config.adam_beta1, self.trainer_config.adam_beta2 ),
-            weight_decay=0.0,
-        )
+        optimizer = self.trainer_config.optimizer
+        pc = self.trainer_config.optimizer_percentile_clipping
+        args = {
+            'params': self.get_param_groups(),
+            'lr': 0.0,
+            'betas': ( self.trainer_config.adam_beta1, self.trainer_config.adam_beta2 ),
+            'weight_decay': 0.0,
+            'eps': self.trainer_config.adam_eps,
+        }
 
-        return optimizer
+        if optimizer == 'adamw':
+            if pc is not None:
+                raise ValueError( 'percentile_clipping not supported for torch AdamW' )
+            return torch.optim.AdamW( **args )
+        elif optimizer in [ 'adamw_32bit', 'adamw_8bit', 'paged_adamw_32bit', 'paged_adamw_8bit' ]:
+            if pc is None:
+                raise ValueError( 'percentile_clipping required for BnB optimizers' )
+            return {
+                'adamw_32bit': bnb.optim.AdamW32bit,
+                'adamw_8bit': bnb.optim.AdamW8bit,
+                'paged_adamw_32bit': bnb.optim.PagedAdamW32bit,
+                'paged_adamw_8bit': bnb.optim.PagedAdamW8bit
+            }[ optimizer ]( **args, percentile_clipping=pc )
+        else:
+            raise ValueError( f'Unknown optimizer {self.trainer_config.optimizer}' )
 
     def get_param_groups( self ):
         base_decay = self.trainer_config.weight_decay

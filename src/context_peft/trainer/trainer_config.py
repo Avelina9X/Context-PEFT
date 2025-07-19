@@ -46,6 +46,8 @@ class TrainerConfig:
     adam_beta2: float = field( default=0.999 )
     adam_eps: float = field( default=1e-8 )
     max_grad_norm: float = field( default=1.0 )
+    optimizer: str = field( default='adamw' )
+    optimizer_percentile_clipping: Optional[int] = field( default=None )
 
     trainable_embeddings: Optional[bool] = field( default=False )
 
