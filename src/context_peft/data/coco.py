@@ -35,7 +35,8 @@ from .dataset_utils import (
 def _compute_instruction_map() -> list[tuple[str, ...]]:
     CAPTION_INSTRUCTIONS_RAW = [
         # Standard caption
-        'Describe this image: <image>',
+        'Describe this image:\n<image>',
+        'Describe this image:\n<image>',
 
         # Direct instructions
         'Describe this {IMAGE}:{SEP}<image>',
@@ -63,7 +64,7 @@ def _compute_instruction_map() -> list[tuple[str, ...]]:
         'Caption this {IMAGE}:{SEP}<image>\nCaption:',
     ]
 
-    IMAGE_INSTRUCTION_MAP = [ 'an image', 'a picture', 'a photo' ]
+    IMAGE_INSTRUCTION_MAP = [ 'an image', 'an image', 'a picture', 'a photo' ]
     SEP_INSTRUCTION_MAP = [ '', ' ', '\n' ]
 
     CAPTION_INSTRUCTIONS_FORMATTED = []
