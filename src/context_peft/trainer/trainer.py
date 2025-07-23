@@ -158,6 +158,9 @@ class Trainer:
             sep_token_id=text_tokenizer.sep_token_id,
         )
 
+        if self.trainer_config.model_seed is not None:
+            torch.manual_seed( self.trainer_config.model_seed )
+
         model = ContextPeftForConditionalGeneration(
             config,
             load_from_hub=True,
@@ -233,6 +236,9 @@ class Trainer:
         )
 
         assert isinstance( config, ContextPeftConfig )
+
+        if self.trainer_config.model_seed is not None:
+            torch.manual_seed( self.trainer_config.model_seed )
 
         model = ContextPeftForConditionalGeneration(
             config=config,

@@ -67,6 +67,7 @@ class TrainerConfig:
     meta: Optional[dict] = field( default=None )
 
     seed_offset: int = field( default=0 )
+    model_seed: Optional[int] = field( default=None )
 
     def __post_init__( self ):
         self._validate_stage()
