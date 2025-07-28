@@ -270,7 +270,7 @@ class CocoDataset( BaseDataset ):
         )
 
         # Download training and validation images to a reusable location
-        dl = DownloadManager( 'coco_2017_local', download_config=dl_config )
+        dl = DownloadManager( 'coco_2017_local', download_config=dl_config, record_checksums=False )
         train_folder = dl.download_and_extract( 'http://images.cocodataset.org/zips/train2017.zip' )
         valid_folder = dl.download_and_extract( 'http://images.cocodataset.org/zips/val2017.zip' )
 
