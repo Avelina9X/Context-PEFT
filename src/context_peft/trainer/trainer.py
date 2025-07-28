@@ -43,7 +43,7 @@ class TrainingSchedule:
     evaluation_interval_steps: int
 
 class Trainer:
-    def __init__( self, trainer_config: TrainerConfig ):
+    def __init__( self, trainer_config: TrainerConfig, verbose=None ):
         self.trainer_config = trainer_config
         
         mp.set_start_method( 'spawn' )
@@ -53,7 +53,8 @@ class Trainer:
         torch._dynamo.config.cache_size_limit = 1024 * 1024 * 1024 # type: ignore # pylint: disable=W0212
         torch._dynamo.config.compiled_autograd = False # type: ignore # pylint: disable=W0212
 
-        if trainer_config.wandb_mode == 'disabled' or True:
+        verbose = verbose if verbose is not None else trainer_config.wandb_mode == 'disabled'
+        if verbose:
             torch._logging.set_logs(
                 graph_breaks=True,
                 recompiles=True,
@@ -840,15 +841,15 @@ class Trainer:
         epoch = metric_dict[ 'stats/dataset_epoch' ]
 
         train_stats = {
-            't_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'train/' )
+            k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'train/' )
         }
 
         valid_stats = {
-            'v_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'validation/' )
+            'v_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( f'validation/{self.dataset.get_name()}' )
         }
 
         eval_stats = {
-            'e_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( 'evaluation/' )
+            'e_' + k.split( '/' )[-1]: v for k, v in metric_dict.items() if k.startswith( f'evaluation/{self.dataset.get_name()}' )
         }
 
         all_metrics_dict = { **train_stats, **valid_stats, **eval_stats }
