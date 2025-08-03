@@ -301,6 +301,7 @@ class Trainer:
             'assistant_suffix': '<|im_end|>',
             'batch_size': self.trainer_config.micro_batch_size,
             'sequence_length': self.trainer_config.sequence_length,
+            'augmentation': self.trainer_config.dataset_augmentations,
         }
         
         if dataset_name == 'coco':
@@ -718,6 +719,18 @@ class Trainer:
         train_iterator = iter( self._train_iterator )
 
         run = self.init_wandb()
+
+        if self.trainer_config.stage != 'stage1':
+            metric_dict = {}
+            metric_dict.update( self.evaluation( False ) )
+            metric_dict.update( self.validation() )
+            metric_dict.update( self.get_stats_metric_dict() )
+            run.log( metric_dict )
+
+        gc.collect()
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
 
         for _ in tqdm.tqdm(
             range( self.training_schedule.total_training_steps ),

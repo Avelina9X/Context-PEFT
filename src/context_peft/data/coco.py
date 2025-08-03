@@ -88,6 +88,71 @@ def _compute_instruction_map() -> list[tuple[str, ...]]:
 
 CAPTION_INSTRUCTIONS_MAP = _compute_instruction_map()
 
+def _train_collate_fn_aug(
+    examples: list,
+    coco_train_folder: str,
+    padding_size: int,
+    processor: ProcessorMixin,
+    assistant_prefix: list[int],
+    assistant_suffix: list[int],
+    caption_instruction_map: list[tuple[str, ...]],
+    augmentation: dict,
+):
+    pad_to = padding_size + 1
+
+    messages = []
+
+    for example in examples:
+        prompt = random.choice( caption_instruction_map )
+        caption = example[ 'caption' ]
+        path = os.path.join( coco_train_folder, example[ 'file_name' ] )
+        image = Image.open( path )
+        image.load()
+
+        if augmentation.get( 'resize', False ):
+            largest_side = max( image.width, image.height )
+            new_width = random.randint( image.width, largest_side )
+            new_height = random.randint( image.height, largest_side )
+            image = image.resize( ( new_width, new_height ), Image.Resampling.NEAREST )
+
+        if augmentation.get( 'crop', False ):
+            crop_size = min( image.width, image.height )
+            image = image.crop( (
+                random.randint( 0, ( image.width - crop_size ) // 2 ),
+                random.randint( 0, ( image.height - crop_size ) // 2 ),
+                random.randint( ( image.width + crop_size ) // 2, image.width ),
+                random.randint( ( image.height + crop_size ) // 2, image.height ),
+            ) )
+
+        messages.append( [
+            make_multimodal_user_turn_from_images( prompt, [ image ] ),
+            make_multimodal_assistant_turn( caption.strip() )
+        ] )
+
+    batch: BatchFeature = processor.apply_chat_template(
+        messages,
+        tokenize=True,
+        return_tensors='pt',
+        padding='max_length',
+        max_length=pad_to,
+        return_dict=True,
+        truncation=False,
+    ) # type: ignore
+
+    input_ids, labels = compute_assistant_mask( batch.input_ids, assistant_prefix, assistant_suffix )
+
+    inputs = {
+        'input_ids': input_ids,
+        'labels': labels,
+    }
+
+    if 'pixel_values' in batch and batch.pixel_values is not None:
+        inputs[ 'pixel_values' ] = batch.pixel_values + torch.randn_like( batch.pixel_values ) * augmentation.get( 'noise', 0.0 )
+
+    if 'attention_mask' in batch and batch.attention_mask is not None:
+        inputs[ 'attention_mask' ] = batch.attention_mask[ :, : -1 ]
+
+    return BatchFeature( inputs, tensor_type='pt' )
 
 def _train_collate_fn(
     examples: list,
@@ -241,6 +306,7 @@ class CocoDataset( BaseDataset ):
         assistant_suffix: list[int] | str,
         batch_size: int,
         sequence_length: int,
+        augmentation: dict | None = None,
         cache_dir: str | None = None,
         download_timeout: int = 3600,
     ):
@@ -252,6 +318,7 @@ class CocoDataset( BaseDataset ):
             assistant_suffix (list[int] | str): Suffix of assistant messages. May be a string or list of token ids.
             batch_size (int): Training batch size.
             sequence_length (int): Sequence length, will pad all sequences up to this size.
+            augmentation (dict, optional): Training dataset augmentation dict, defaults to None.
             cache_dir (str | None, optional): When specified uses this directory for dataset cache instead of default. Defaults to None.
         """
         super().__init__(
@@ -259,7 +326,8 @@ class CocoDataset( BaseDataset ):
             assistant_prefix=assistant_prefix,
             assistant_suffix=assistant_suffix, 
             batch_size=batch_size,
-            sequence_length=sequence_length
+            sequence_length=sequence_length,
+            augmentation=augmentation,
         )
 
         # Create download config with extended timeout, optional cache_dir, and optional progbars
@@ -308,7 +376,7 @@ class CocoDataset( BaseDataset ):
         return self.valid_split
     
     def train_collate_fn( self, examples: list ) -> BatchFeature:
-        return _train_collate_fn(
+        return _train_collate_fn_aug(
             examples=examples,
             coco_train_folder=self.train_folder,
             padding_size=self.sequence_length,
@@ -316,6 +384,7 @@ class CocoDataset( BaseDataset ):
             assistant_prefix=self.assistant_prefix,
             assistant_suffix=self.assistant_suffix,
             caption_instruction_map=CAPTION_INSTRUCTIONS_MAP,
+            augmentation=self.augmentation,
         )
     
     def validation_collate_fn( self, examples: list ) -> BatchFeature:

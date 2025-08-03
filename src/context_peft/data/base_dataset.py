@@ -62,6 +62,7 @@ class BaseDataset( ABC ):
         assistant_suffix: list[int] | str,
         batch_size: int,
         sequence_length: int,
+        augmentation: dict | None = None,
     ):
         """ Instantiates a generic multimodal image-text dataset
 
@@ -71,6 +72,7 @@ class BaseDataset( ABC ):
             assistant_suffix (list[int] | str): Suffix of assistant messages. May be a string or list of token ids.
             batch_size (int): Training batch size.
             sequence_length (int): Sequence length, will pad all sequences up to this size.
+            augmentation (dict, optional): Training dataset augmentation dict, defaults to None.
         """
 
         self.processor = processor
@@ -86,6 +88,12 @@ class BaseDataset( ABC ):
 
         self.batch_size = batch_size
         self.sequence_length = sequence_length
+
+        self.augmentation = augmentation or {}
+
+        for key in self.augmentation:
+            if key not in [ 'resize', 'crop', 'noise' ]:
+                raise ValueError( f'Augmentation `{key}` is invalid!' )
 
     @abstractmethod
     def get_name( self ) -> str:
