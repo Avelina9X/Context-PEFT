@@ -6,6 +6,7 @@ from trainer import Trainer, TrainerConfig
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument( '--config', required=True, type=str )
+    parser.add_argument( '--config_idx', required=False, type=str )
     parser.add_argument( '--seed_offset', required=False, type=int )
     parser.add_argument( '--micro_batch_mult', required=False, type=int, default=1 )
     parser.add_argument( '--wandb_mode', required=False, type=str )
@@ -14,6 +15,12 @@ if __name__ == '__main__':
     with open( args.config, 'r', encoding='utf-8' ) as f:
         config = yaml.safe_load( f )
         assert isinstance( config, dict )
+
+    if args.config_idx is not None:
+        config = {
+            **config[ 'base_config' ],
+            **config[ 'configs' ][ args.config_idx ]
+        }
 
     config[ 'micro_batch_size' ] = min( config[ 'batch_size' ], config[ 'micro_batch_size' ] * args.micro_batch_mult )
     
